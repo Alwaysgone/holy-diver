@@ -1,15 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    time::SystemTime, array::from_mut,
+    time::SystemTime,
 };
 
 use bincode::Options;
-use bytes::{Bytes, BytesMut, BufMut};
-use bytes::{buf::Writer};
+use bytes::{Bytes, BytesMut, BufMut,};
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::fmt::writer;
 use uuid::Uuid;
+use log::info;
 
 use foca::{BroadcastHandler, Invalidates};
 
@@ -21,7 +20,7 @@ use foca::{BroadcastHandler, Invalidates};
 //
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-enum Tag {
+pub enum Tag {
     // We can propagate general-purpose operations. Foca shouldn't
     // care about what's inside the payload, just wether this
     // has been acted on already or not.
@@ -53,9 +52,30 @@ enum Tag {
     },
 }
 
-struct Broadcast {
-    tag: Tag,
-    data: Bytes,
+pub struct Broadcast {
+    pub tag: Tag,
+    pub data: Bytes,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GossipMessage {
+    message_type: MessageType,
+    message_payload: Vec<u8>,
+}
+
+impl GossipMessage {
+    pub fn new(message_type: MessageType, message_payload: Vec<u8>) -> Self {
+        GossipMessage {
+            message_type,
+            message_payload
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum MessageType {
+    FullSync,
+    IncSync,
 }
 
 impl Invalidates for Broadcast {
@@ -93,17 +113,30 @@ impl AsRef<[u8]> for Broadcast {
 }
 
 // XXX Use actually useful types
-type Operation = String;
+type Operation = GossipMessage;
 type NodeConfig = String;
 
-struct Handler {
+pub struct Handler {
     buffer: BytesMut,
     seen_op_ids: HashSet<Uuid>,
     node_config: HashMap<SocketAddr, (SystemTime, NodeConfig)>,
+    message_handler: fn(MessageType, Vec<u8>),
 }
 
 impl Handler {
-    fn craft_broadcast<T: Serialize>(&mut self, tag: Tag, item: T) -> Broadcast {
+    pub fn new(buffer: BytesMut,
+        seen_op_ids: HashSet<Uuid>,
+        node_config: HashMap<SocketAddr, (SystemTime, NodeConfig)>,
+        message_handler: fn(MessageType, Vec<u8>)) -> Self {
+        Handler {
+            buffer,
+            seen_op_ids,
+            node_config,
+            message_handler
+        }
+    }
+
+    pub fn craft_broadcast<T: Serialize>(&mut self, tag: Tag, item: T) -> Broadcast {
         self.buffer.reserve(1400);
         let mut crafted = self.buffer.split();
 
@@ -163,9 +196,10 @@ impl<T> BroadcastHandler<T> for Handler {
         // the buffer, immediatelly after the tag. We can finally
         // make a decision
         match tag {
-            Tag::Operation { operation_id } => {
+            Tag::Operation { operation_id} => {
                 if self.seen_op_ids.contains(&operation_id) {
                     // We've seen this data before, nothing to do
+                    info!("Got already seen broadcast");
                     return Ok(None);
                 }
 
@@ -176,7 +210,7 @@ impl<T> BroadcastHandler<T> for Handler {
                     // This is where foca stops caring
                     // If it were me, I'd stuff the bytes as-is into a channel
                     // and have a separate task/thread consuming it.
-                    do_something_with_the_data()
+                    (self.message_handler)(op.message_type, op.message_payload.clone());
                 }
 
                 // This WAS new information, so we signal it to foca
@@ -200,8 +234,4 @@ impl<T> BroadcastHandler<T> for Handler {
             }
         }
     }
-}
-
-fn do_something_with_the_data() {
-    unimplemented!()
 }

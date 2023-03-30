@@ -4,6 +4,7 @@ use std::{
 
 use crate::swim::types::ID;
 
+#[derive(Debug)]
 pub struct Members(HashMap<SocketAddr, u8>);
 
 impl Members {

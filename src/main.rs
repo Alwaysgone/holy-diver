@@ -2,23 +2,30 @@ mod swim;
 
 use std::{
     fs, fs::File, io::Write, net::SocketAddr, path::Path, str::FromStr,
-    sync::Arc
+    sync::Arc, collections::{HashMap, HashSet},
 };
-use clap::{arg, Command, builder::NonEmptyStringValueParser};
+use clap::{arg, Command, builder::{NonEmptyStringValueParser, BoolValueParser}};
 use rand::{rngs::StdRng, SeedableRng};
 use foca::{Config, Foca, Notification, PostcardCodec, Timer};
 use tokio::{net::UdpSocket, sync::mpsc};
-use log::{info, debug, error};
+use log::{info, error};
 use bytes::{BufMut, Bytes, BytesMut};
 
 use swim::core::{AccumulatingRuntime};
 use swim::types::ID;
 use swim::members::Members;
+use swim::broadcast::{Handler, MessageType, MessageType::FullSync, GossipMessage, Tag::Operation};
+
+use automerge::transaction::Transactable;
+use automerge::AutomergeError;
+use automerge::ObjType;
+use automerge::{Automerge, ROOT};
+use uuid::Uuid;
 
 fn cli() -> Command {
     Command::new("holy-diver")
         .about("You expected SWIM but it was me DIO!")
-        .arg_required_else_help(true)
+        .arg_required_else_help(false)
         // .arg(Arg::new("bind-address")
     // .help("Socket address to bind to. Example: 127.0.0.1:8080""))
         .args(&[
@@ -38,6 +45,9 @@ fn cli() -> Command {
         arg!(-d --"data-dir" <DATA_DIR> "Name of the file that will contain all active members")
         .value_parser(NonEmptyStringValueParser::new())
         .id("data-dir"),
+        arg!(-b --broadcast <BROADCAST> "Flag that indicates whether a broadcast should be sent on startup or not")
+        .value_parser(BoolValueParser::new())
+        .id("broadcast"),
         ])
         
 }
@@ -66,6 +76,25 @@ fn do_the_file_replace_dance<'a>(
     Ok(())
 }
 
+fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
+    info!("Received message of type {:?} with size {}", msg_type, msg_payload.len());
+}
+
+fn get_broadcast_data() -> Vec<u8> {
+    // let mut data = Automerge::new();
+    // let heads = data.get_heads();
+    // data.transact::<_,_,AutomergeError>(|tx| {
+    //     let memos = tx.put_object(ROOT, "memos", ObjType::Map).unwrap();
+    //     let memo1 = tx.put(&memos, "Memo1", "Do the thing").unwrap();
+    //     let memo2 = tx.put(&memos, "Memo2", "Add automerge support").unwrap();
+    //     Ok((memo1, memo2))
+    // })
+    // .unwrap()
+    // .result;
+    // data.save()
+    let v = vec!(1, 2);
+    v
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), anyhow::Error> {
@@ -108,16 +137,38 @@ async fn main() -> Result<(), anyhow::Error> {
         info!("Starting up as single swimmer");
     }
 
-    let data_dir = matches.get_one::<String>("data-dir")
-    .map(|dd| Path::new(dd))
-    .unwrap_or(Path::new("./data"));
-    info!("Using {:?} as data dir", data_dir);
-    fs::create_dir_all(data_dir)?;
+    let should_broadcast = matches.get_one::<bool>("broadcast")
+    .unwrap_or(&false)
+    .to_owned();
 
-    let file_name = data_dir.join("nodes.txt").into_os_string().into_string().unwrap();
-    info!("Writing nodes to {}", file_name);
+    // let data_dir = matches.get_one::<String>("data-dir")
+    // .map(|dd| Path::new(dd))
+    // .unwrap_or(Path::new("./data"));
+    // info!("Using {:?} as data dir", data_dir);
+    // fs::create_dir_all(data_dir)?;
 
-    let mut foca = Foca::new(identity, config, rng, PostcardCodec);
+    // let file_name = data_dir.join("nodes.txt").into_os_string().into_string().unwrap();
+    // info!("Writing nodes to {}", file_name);
+
+    let mut broadcast_handler = Handler::new(BytesMut::new(), HashSet::new(), HashMap::new(), handle_message);
+    let broadcast_data = get_broadcast_data();
+    let msg = GossipMessage::new(FullSync, broadcast_data);
+    let broadcast_msg = broadcast_handler.craft_broadcast(Operation {
+        operation_id: Uuid::new_v4()
+    }, msg);
+    let mut foca = Foca::with_custom_broadcast(identity, config, rng, PostcardCodec, broadcast_handler);
+    // let mut foca = Foca::new(identity, config, rng, PostcardCodec);
+    
+    if should_broadcast {
+        let msg_bytes:Vec<u8> = broadcast_msg.data.into_iter().collect();
+        match foca.add_broadcast(&msg_bytes) {
+            Ok(_) => info!("Added broadcast"),
+            Err(e) => error!("Could not add broadcast: {}", e),
+        }
+    } else {
+        info!("Not broadcasting");
+    }
+
     let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
 
     // We'll create a task responsible to sending data through the
@@ -210,23 +261,27 @@ async fn main() -> Result<(), anyhow::Error> {
             let mut active_list_has_changed = false;
             while let Some(notification) = runtime.notifications.pop() {
                 match notification {
-                    Notification::MemberUp(id) => active_list_has_changed |= members.add_member(id),
+                    Notification::MemberUp(id) => {
+                        info!("member with id {:?} up", id);
+                        active_list_has_changed |= members.add_member(id);
+                    },
                     Notification::MemberDown(id) => {
-                        active_list_has_changed |= members.remove_member(id)
-                    }
+                        info!("member with id {:?} down", id);
+                        active_list_has_changed |= members.remove_member(id);
+                    },
                     Notification::Idle => {
                         info!("cluster empty");
-                    }
-
+                    },
                     other => {
-                        debug!("unhandled notification {:?}", other);
+                        info!("unhandled notification {:?}", other);
                     }
                 }
             }
 
             if active_list_has_changed {
-                do_the_file_replace_dance(&file_name, members.addrs())
-                    .expect("Can write the file alright");
+                info!("New members list: {:?}", members);
+                // do_the_file_replace_dance(&file_name, members.addrs())
+                //     .expect("Can write the file alright");
             }
         }
     });
