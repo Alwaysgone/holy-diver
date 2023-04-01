@@ -117,19 +117,17 @@ type Operation = GossipMessage;
 type NodeConfig = String;
 
 pub struct Handler {
-    buffer: BytesMut,
     seen_op_ids: HashSet<Uuid>,
     node_config: HashMap<SocketAddr, (SystemTime, NodeConfig)>,
     message_handler: fn(MessageType, Vec<u8>),
 }
 
 impl Handler {
-    pub fn new(buffer: BytesMut,
+    pub fn new(
         seen_op_ids: HashSet<Uuid>,
         node_config: HashMap<SocketAddr, (SystemTime, NodeConfig)>,
         message_handler: fn(MessageType, Vec<u8>)) -> Self {
         Handler {
-            buffer,
             seen_op_ids,
             node_config,
             message_handler
@@ -137,24 +135,19 @@ impl Handler {
     }
 
     pub fn craft_broadcast<T: Serialize>(&mut self, tag: Tag, item: T) -> Broadcast {
-        self.buffer.reserve(1400);
-        let mut crafted = self.buffer.split();
-
-        // The payload length. We'll circle back and update it to
-        // a real value at the end
-        crafted.put_u16(0);
-        let mut writer = crafted.writer();
+        let mut crafted = BytesMut::new();
+        let mut writer = BytesMut::new().writer();
 
         let opts = bincode::DefaultOptions::new();
         opts.serialize_into(&mut writer, &tag)
             .expect("error handling");
-
         opts.serialize_into(&mut writer, &item)
             .expect("error handling");
 
-        let mut crafted = writer.into_inner();
-        let final_len = crafted.len() as u16;
-        (&mut crafted[0..1]).put_u16(final_len);
+        let content = writer.into_inner();
+        let final_len = content.len() as u16;
+        crafted.put_u16(final_len);
+        crafted.extend(content);
 
         // Notice that `tag` here is already inside `data`,
         // we keep a copy outside to make it easier when implementing
@@ -174,6 +167,7 @@ impl<T> BroadcastHandler<T> for Handler {
         &mut self,
         data: impl bytes::Buf,
     ) -> Result<Option<Self::Broadcast>, Self::Error> {
+        info!("Receiving item ...");
         // Broadcast payload is u16-length prefixed
         if data.remaining() < 2 {
             return Err(String::from("Not enough bytes"));

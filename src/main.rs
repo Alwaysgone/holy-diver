@@ -1,7 +1,7 @@
 mod swim;
 
 use std::{
-    fs, fs::File, io::Write, net::SocketAddr, path::Path, str::FromStr,
+    fs::File, io::Write, net::SocketAddr, path::Path, str::FromStr,
     sync::Arc, collections::{HashMap, HashSet},
 };
 use clap::{arg, Command, builder::{NonEmptyStringValueParser, BoolValueParser}};
@@ -78,22 +78,24 @@ fn do_the_file_replace_dance<'a>(
 
 fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
     info!("Received message of type {:?} with size {}", msg_type, msg_payload.len());
+    let doc = Automerge::load(&msg_payload);
+    info!("Received document: {:?}", doc);
 }
 
 fn get_broadcast_data() -> Vec<u8> {
-    // let mut data = Automerge::new();
-    // let heads = data.get_heads();
-    // data.transact::<_,_,AutomergeError>(|tx| {
-    //     let memos = tx.put_object(ROOT, "memos", ObjType::Map).unwrap();
-    //     let memo1 = tx.put(&memos, "Memo1", "Do the thing").unwrap();
-    //     let memo2 = tx.put(&memos, "Memo2", "Add automerge support").unwrap();
-    //     Ok((memo1, memo2))
-    // })
-    // .unwrap()
-    // .result;
-    // data.save()
-    let v = vec!(1, 2);
-    v
+    let mut data = Automerge::new();
+    let _heads = data.get_heads();
+    data.transact::<_,_,AutomergeError>(|tx| {
+        let memos = tx.put_object(ROOT, "memos", ObjType::Map).unwrap();
+        let memo1 = tx.put(&memos, "Memo1", "Do the thing").unwrap();
+        let memo2 = tx.put(&memos, "Memo2", "Add automerge support").unwrap();
+        Ok((memo1, memo2))
+    })
+    .unwrap()
+    .result;
+    data.save()
+    // let v = vec!(1, 2);
+    // v
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -150,7 +152,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // let file_name = data_dir.join("nodes.txt").into_os_string().into_string().unwrap();
     // info!("Writing nodes to {}", file_name);
 
-    let mut broadcast_handler = Handler::new(BytesMut::new(), HashSet::new(), HashMap::new(), handle_message);
+    let mut broadcast_handler = Handler::new(HashSet::new(), HashMap::new(), handle_message);
     let broadcast_data = get_broadcast_data();
     let msg = GossipMessage::new(FullSync, broadcast_data);
     let broadcast_msg = broadcast_handler.craft_broadcast(Operation {
