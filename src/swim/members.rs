@@ -27,7 +27,7 @@ impl Members {
     // A result of `true` means that the effective list of
     // cluster member addresses has changed
     pub fn remove_member(&mut self, member: ID) -> bool {
-        let effectivelly_down = if let Some(counter) = self.0.get_mut(&member.addr) {
+        let effectively_down = if let Some(counter) = self.0.get_mut(&member.addr) {
             *counter -= 1;
 
             counter == &0
@@ -36,11 +36,11 @@ impl Members {
             false
         };
 
-        if effectivelly_down {
+        if effectively_down {
             self.0.remove(&member.addr);
         }
 
-        effectivelly_down
+        effectively_down
     }
 
     pub fn addrs(&self) -> impl Iterator<Item = &SocketAddr> {

@@ -1,7 +1,7 @@
 mod swim;
 
 use std::{
-    fs::File, io::Write, net::SocketAddr, path::Path, str::FromStr,
+    net::SocketAddr, str::FromStr,
     sync::Arc, collections::{HashMap, HashSet},
 };
 use clap::{arg, Command, builder::{NonEmptyStringValueParser, BoolValueParser}};
@@ -52,30 +52,6 @@ fn cli() -> Command {
         
 }
 
-fn do_the_file_replace_dance<'a>(
-    fname: &str,
-    addrs: impl Iterator<Item = &'a SocketAddr>,
-) -> std::io::Result<()> {
-    // Shirley, there's a more hygienic way of doing all this
-
-    let tmp_fname = format!("{}.new", fname);
-
-    let mut tmp = File::create(&tmp_fname)?;
-    for addr in addrs {
-        writeln!(&mut tmp, "{}", addr)?;
-    }
-
-    let dst = Path::new(fname);
-    if dst.exists() {
-        let old_fname = format!("{}.old", fname);
-        std::fs::rename(dst, Path::new(&old_fname))?;
-    }
-
-    std::fs::rename(Path::new(&tmp_fname), Path::new(fname))?;
-
-    Ok(())
-}
-
 fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
     info!("Received message of type {:?} with size {}", msg_type, msg_payload.len());
     let doc = Automerge::load(&msg_payload);
@@ -93,9 +69,9 @@ fn get_broadcast_data() -> Vec<u8> {
     })
     .unwrap()
     .result;
-    data.save()
-    // let v = vec!(1, 2);
-    // v
+    // data.save()
+    let v = vec!(1, 2);
+    v
 }
 
 #[tokio::main(flavor = "current_thread")]

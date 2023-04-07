@@ -52,6 +52,7 @@ pub enum Tag {
     },
 }
 
+#[derive(Debug, Clone)]
 pub struct Broadcast {
     pub tag: Tag,
     pub data: Bytes,
@@ -152,10 +153,12 @@ impl Handler {
         // Notice that `tag` here is already inside `data`,
         // we keep a copy outside to make it easier when implementing
         // `Invalidates`
-        Broadcast {
+        let broadcast = Broadcast {
             tag,
             data: crafted.freeze(),
-        }
+        };
+        info!("Crafted broadcast: {:?}", broadcast.clone());
+        broadcast
     }
 }
 
@@ -168,6 +171,14 @@ impl<T> BroadcastHandler<T> for Handler {
         data: impl bytes::Buf,
     ) -> Result<Option<Self::Broadcast>, Self::Error> {
         info!("Receiving item ...");
+        let raw_data = data.chunk();
+        info!("Raw data: {:?}", raw_data);
+        //FIXME how to handle this seemingly foca internal message
+        if *raw_data == [0, 2, 1, 2] {
+            info!("Found foca internal message, ignoring it");
+            // return Ok(None);
+            return Err(String::from("cannot process foca specific message"));
+        }
         // Broadcast payload is u16-length prefixed
         if data.remaining() < 2 {
             return Err(String::from("Not enough bytes"));
@@ -208,7 +219,9 @@ impl<T> BroadcastHandler<T> for Handler {
                 }
 
                 // This WAS new information, so we signal it to foca
-                let broadcast = self.craft_broadcast(tag, op);
+                let broadcast = self.craft_broadcast(Tag::Operation {
+                    operation_id: operation_id
+                }, op);
                 Ok(Some(broadcast))
             }
             Tag::NodeConfig { node, version } => {
