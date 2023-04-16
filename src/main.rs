@@ -2,7 +2,7 @@ mod swim;
 
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::Arc, collections::{HashMap, HashSet},
+    sync::Arc, collections::{HashMap, HashSet}, num::NonZeroU8,
 };
 use clap::{arg, Command, builder::{NonEmptyStringValueParser, BoolValueParser}};
 use rand::{rngs::StdRng, SeedableRng};
@@ -22,6 +22,8 @@ use automerge::AutomergeError;
 use automerge::ObjType;
 use automerge::{Automerge, ROOT};
 use uuid::Uuid;
+
+use crate::swim::broadcast::RawBroadcast;
 
 fn cli() -> Command {
     Command::new("holy-diver")
@@ -53,10 +55,10 @@ fn cli() -> Command {
         
 }
 
-fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
+fn handle_message(msg_type:MessageType, msg_payload:Bytes) {
     info!("Received message of type {:?} with size {}", msg_type, msg_payload.len());
-    let doc = Automerge::load(&msg_payload);
-    info!("Received document: {:?}", doc);
+    // let doc = Automerge::load(&msg_payload);
+    // info!("Received document: {:?}", doc);
 }
 
 fn get_broadcast_data() -> Vec<u8> {
@@ -70,9 +72,9 @@ fn get_broadcast_data() -> Vec<u8> {
     })
     .unwrap()
     .result;
-    // data.save()
-    let v = vec!(1, 2);
-    v
+    data.save()
+    // let v = vec!(1, 2);
+    // v
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -80,6 +82,14 @@ async fn main() -> Result<(), anyhow::Error> {
     dotenv().ok();
     env_logger::init();
     let matches = cli().get_matches();
+
+    // let binary_string = b"\0\xc0\xa8\xb2D\xa8F\xb8\xd2\x02\0\0\xc0\xa8\xb2D\xa9F\xdc\x82\x02\x07\0\0";
+    // let str_result = std::str::from_utf8(binary_string);
+    // if let Ok(result) = str_result {
+    //     info!("Result: {}", result);
+    // } else {
+    //     info!("Could not read result");
+    // }
 
     info!("Starting with matches: {:?}", matches);
 
@@ -91,6 +101,8 @@ async fn main() -> Result<(), anyhow::Error> {
         // wait for it the member to be declared down then resume
         // it (fg) and foca should recover by itself
         c.notify_down_members = true;
+        // limits the 
+        c.max_transmissions = NonZeroU8::new(2).unwrap();
         c
     };
 
@@ -130,18 +142,22 @@ async fn main() -> Result<(), anyhow::Error> {
     // let file_name = data_dir.join("nodes.txt").into_os_string().into_string().unwrap();
     // info!("Writing nodes to {}", file_name);
 
-    let mut broadcast_handler = Handler::new(HashSet::new(), HashMap::new(), handle_message);
+    let mut broadcast_handler = Handler::new(HashSet::new(), vec![], HashMap::new(), handle_message);
     let broadcast_data = get_broadcast_data();
-    let msg = GossipMessage::new(FullSync, broadcast_data);
-    let broadcast_msg = broadcast_handler.craft_broadcast(Operation {
-        operation_id: Uuid::new_v4()
-    }, msg);
+    let broadcast_msg = broadcast_handler.craft_broadcast3(RawBroadcast {
+        id: Uuid::new_v4(),
+        data: broadcast_data,
+    });
+    // let msg = GossipMessage::new(FullSync, broadcast_data);
+    // let broadcast_msg = broadcast_handler.craft_broadcast2(Operation {
+    //     operation_id: Uuid::new_v4()
+    // }, &broadcast_data);
     let mut foca = Foca::with_custom_broadcast(identity, config, rng, PostcardCodec, broadcast_handler);
     // let mut foca = Foca::new(identity, config, rng, PostcardCodec);
     
     if should_broadcast {
-        let msg_bytes:Vec<u8> = broadcast_msg.data.into_iter().collect();
-        match foca.add_broadcast(&msg_bytes) {
+        // let msg_bytes:Vec<u8> = broadcast_msg.data.into_iter().collect();
+        match foca.add_broadcast(&broadcast_msg) {
             Ok(_) => info!("Added broadcast"),
             Err(e) => error!("Could not add broadcast: {}", e),
         }
@@ -190,7 +206,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
             let result = match input {
                 Input::Event(timer) => foca.handle_timer(timer, &mut runtime),
-                Input::Data(data) => foca.handle_data(&data, &mut runtime),
+                Input::Data(data) => {
+                    // info!("Input::Data: {:?}", data);
+                    let res = foca.handle_data(&data, &mut runtime);
+                    res
+                },
                 Input::Announce(dst) => foca.announce(dst, &mut runtime),
             };
 
@@ -279,8 +299,10 @@ async fn main() -> Result<(), anyhow::Error> {
             // Accordinly, we would undo everything that's done prior to
             // sending: decompress, decrypt, remove the envelope
             databuf.put_slice(&recv_buf[..len]);
+            let data_to_send = databuf.split().freeze();
+            // info!("Data to send: {:?}", data_to_send);
             // And simply forward it to foca
-            let _ignored_send_error = tx_foca.send(Input::Data(databuf.split().freeze())).await;
+            let _ignored_send_error = tx_foca.send(Input::Data(data_to_send)).await;
             },
             Err(e) => error!("got an error receiving: {}", e),
         }
