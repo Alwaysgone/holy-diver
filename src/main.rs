@@ -10,6 +10,7 @@ use foca::{Config, Foca, Notification, PostcardCodec, Timer};
 use tokio::{net::UdpSocket, sync::mpsc};
 use log::{info, error};
 use bytes::{BufMut, Bytes, BytesMut};
+use dotenv::dotenv;
 
 use swim::core::{AccumulatingRuntime};
 use swim::types::ID;
@@ -76,6 +77,7 @@ fn get_broadcast_data() -> Vec<u8> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), anyhow::Error> {
+    dotenv().ok();
     env_logger::init();
     let matches = cli().get_matches();
 
