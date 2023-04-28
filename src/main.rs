@@ -2,9 +2,9 @@ mod swim;
 
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::Arc, collections::HashSet, num::NonZeroU8,
+    sync::Arc, collections::HashSet, num::NonZeroU8, path::PathBuf,
 };
-use clap::{arg, Command, builder::{NonEmptyStringValueParser, BoolValueParser}};
+use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
 use rand::{rngs::StdRng, SeedableRng};
 use foca::{Config, Foca, Notification, PostcardCodec, Timer};
 use tokio::{net::UdpSocket, sync::mpsc};
@@ -44,7 +44,8 @@ fn cli() -> Command {
         .value_parser(NonEmptyStringValueParser::new())
         .id("announce-to"),
         arg!(-d --"data-dir" <DATA_DIR> "Name of the file that will contain all active members")
-        .value_parser(NonEmptyStringValueParser::new())
+        .value_parser(value_parser!(PathBuf))
+        .default_value(OsStr::from("./data"))
         .id("data-dir"),
         arg!(-b --broadcast <BROADCAST> "Flag that indicates whether a broadcast should be sent on startup or not")
         .value_parser(BoolValueParser::new())
@@ -90,16 +91,7 @@ async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     let matches = cli().get_matches();
 
-    // let binary_string = b"\0\xc0\xa8\xb2D\xa8F\xb8\xd2\x02\0\0\xc0\xa8\xb2D\xa9F\xdc\x82\x02\x07\0\0";
-    // let str_result = std::str::from_utf8(binary_string);
-    // if let Ok(result) = str_result {
-    //     info!("Result: {}", result);
-    // } else {
-    //     info!("Could not read result");
-    // }
-
     info!("Starting with matches: {:?}", matches);
-
 
     let rng = StdRng::from_entropy();
     let config = {
@@ -135,6 +127,10 @@ async fn main() -> Result<(), anyhow::Error> {
     } else {
         info!("Starting up as single swimmer");
     }
+
+    let data_dir = matches.get_one::<PathBuf>("data-dir")
+    .expect("clap should have provided a default value for data-dir");
+    info!("Using {} as data dir", data_dir.display());
 
     let should_broadcast = matches.get_one::<bool>("broadcast")
     .unwrap_or(&false)
