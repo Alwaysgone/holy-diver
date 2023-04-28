@@ -4,11 +4,11 @@ use std::{
     time::SystemTime, io::Read, str::FromStr,
 };
 use std::io::Write;
-use bincode::{Options, de};
+use bincode::{Options, de, serialize};
 use bytes::{Bytes, BytesMut, BufMut,};
 use serde::{Deserialize, Serialize, ser::{SerializeStruct, self}, de::Visitor};
 use uuid::Uuid;
-use log::info;
+use log::{debug, info};
 
 use foca::{BroadcastHandler, Invalidates};
 
@@ -29,7 +29,7 @@ pub enum Tag {
     // at all: everything NEW it receives will be broadcast.
     Operation {
         operation_id: Uuid,
-        // Depending on the nature of the opeartions, this could
+        // Depending on the nature of the operations, this could
         // use more metadata.
         // E.g.: members may receive operations out of order;
         // If the storage doesn't handle that correctly you'll
@@ -56,6 +56,12 @@ pub enum Tag {
 pub struct RawBroadcast {
     pub id: Uuid,
     pub data: Vec<u8>,
+    pub encoded: Vec<u8>,
+}
+
+pub struct NewBroadcast {
+    pub tag: Tag,
+    pub data: Bytes,
 }
 
 // impl Serialize for RawBroadcast {
@@ -125,19 +131,39 @@ pub struct RawBroadcast {
 //     }
 // }
 
+impl Invalidates for NewBroadcast {
+    fn invalidates(&self, _other: &Self) -> bool {
+       false
+    }
+}
+
+impl AsRef<[u8]> for NewBroadcast {
+    fn as_ref(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+}
+
 impl Invalidates for RawBroadcast {
     // I think this is where confusion happens: It's about invalidating
     // items ALREADY in the broadcast buffer, i.e.: foca uses this
     // to manage its broadcast buffer so it can stop talking about unecessary
     // (invalidated) data.
-    fn invalidates(&self, _other: &Self) -> bool {
-        false
+    fn invalidates(&self, other: &Self) -> bool {
+        self.id.eq(&other.id)
     }
 }
 
 impl AsRef<[u8]> for RawBroadcast {
     fn as_ref(&self) -> &[u8] {
-        self.data.as_ref()
+        &self.encoded
+        // let mut writer = BytesMut::new().writer();
+
+        // let opts = bincode::DefaultOptions::new();
+        // opts.serialize_into(&mut writer, self)
+        //     .expect("error handling");
+        // let serialized_data = writer.into_inner().freeze();
+        // serialized_data.as_ref()
+        // self.data.as_ref()
     }
 }
 
@@ -168,39 +194,39 @@ pub enum MessageType {
     IncSync,
 }
 
-impl Invalidates for Broadcast {
-    // I think this is where confusion happens: It's about invalidating
-    // items ALREADY in the broadcast buffer, i.e.: foca uses this
-    // to manage its broadcast buffer so it can stop talking about unecessary
-    // (invalidated) data.
-    fn invalidates(&self, other: &Self) -> bool {
-        match (self.tag, other.tag) {
-            // The only time we care about invalidation is when we have
-            // a new nodeconfig for a node and are already broadcasting
-            // a config about this same node. We need to decide which
-            // to keep.
-            (
-                Tag::NodeConfig {
-                    node: self_node,
-                    version: self_version,
-                },
-                Tag::NodeConfig {
-                    node: other_node,
-                    version: other_version,
-                },
-            ) if self_node == other_node => self_version > other_version,
-            // Any other case we'll keep broadcasting until it gets sent
-            // `Config::max_transmissions` times (or gets invalidated)
-            _ => false,
-        }
-    }
-}
+// impl Invalidates for Broadcast {
+//     // I think this is where confusion happens: It's about invalidating
+//     // items ALREADY in the broadcast buffer, i.e.: foca uses this
+//     // to manage its broadcast buffer so it can stop talking about unecessary
+//     // (invalidated) data.
+//     fn invalidates(&self, other: &Self) -> bool {
+//         match (self.tag, other.tag) {
+//             // The only time we care about invalidation is when we have
+//             // a new nodeconfig for a node and are already broadcasting
+//             // a config about this same node. We need to decide which
+//             // to keep.
+//             (
+//                 Tag::NodeConfig {
+//                     node: self_node,
+//                     version: self_version,
+//                 },
+//                 Tag::NodeConfig {
+//                     node: other_node,
+//                     version: other_version,
+//                 },
+//             ) if self_node == other_node => self_version > other_version,
+//             // Any other case we'll keep broadcasting until it gets sent
+//             // `Config::max_transmissions` times (or gets invalidated)
+//             _ => false,
+//         }
+//     }
+// }
 
-impl AsRef<[u8]> for Broadcast {
-    fn as_ref(&self) -> &[u8] {
-        self.data.as_ref()
-    }
-}
+// impl AsRef<[u8]> for Broadcast {
+//     fn as_ref(&self) -> &[u8] {
+//         self.data.as_ref()
+//     }
+// }
 
 // XXX Use actually useful types
 type Operation = GossipMessage;
@@ -210,7 +236,7 @@ pub struct Handler {
     seen_op_ids: HashSet<Uuid>,
     seen_data: Vec<Bytes>,
     node_config: HashMap<SocketAddr, (SystemTime, NodeConfig)>,
-    message_handler: fn(MessageType, Bytes),
+    message_handler: fn(MessageType, Vec<u8>),
 }
 
 impl Handler {
@@ -218,7 +244,7 @@ impl Handler {
         seen_op_ids: HashSet<Uuid>,
         seen_data: Vec<Bytes>,
         node_config: HashMap<SocketAddr, (SystemTime, NodeConfig)>,
-        message_handler: fn(MessageType, Bytes)) -> Self {
+        message_handler: fn(MessageType, Vec<u8>)) -> Self {
         Self {
             seen_op_ids,
             seen_data,
@@ -227,7 +253,19 @@ impl Handler {
         }
     }
 
+    pub fn craft_broadcast4(&mut self, tag: Tag, item: GossipMessage) -> NewBroadcast {
+        let mut writer = BytesMut::new().writer();
+        let opts = bincode::DefaultOptions::new();
+        opts.serialize_into(&mut writer, &tag).expect("error handling");
+        opts.serialize_into(&mut writer, &item).expect("error handling");
+        NewBroadcast {
+            tag: tag,
+            data: writer.into_inner().freeze()
+        }
+    }
+
     pub fn craft_broadcast3(&mut self, broadcast:RawBroadcast) -> Bytes {
+        // serialize(broadcast).unwrap()
         let mut writer = BytesMut::new().writer();
 
         let opts = bincode::DefaultOptions::new();
@@ -286,7 +324,7 @@ impl Handler {
 }
 
 impl<T> BroadcastHandler<T> for Handler {
-    type Broadcast = RawBroadcast;
+    type Broadcast = NewBroadcast;
     type Error = String;
 
     fn receive_item(
@@ -296,27 +334,83 @@ impl<T> BroadcastHandler<T> for Handler {
         info!("Receiving item ...");
         let opts = bincode::DefaultOptions::new();
         let mut reader = data.reader();
-        // let id:Uuid = opts.deserialize_from(&mut reader).unwrap();
-        // let content:Vec<u8> = opts.deserialize_from(&mut reader).unwrap();
-        let broadcast:RawBroadcast = opts.deserialize_from(&mut reader).unwrap();
-        // let broadcast = RawBroadcast {
-        //     id: id,
-        //     data: content,
-        // };
-        info!("Received RawBroadcast: {:?}", broadcast.clone());
-        // let mut read_data:Vec<u8> = vec![];
-        // reader.read_to_end(&mut read_data)
-        // .expect("could not read payload");
-        // let bytes = Bytes::from(read_data);
-        // info!("Raw data: {:?}", bytes);
-        if self.seen_op_ids.contains(&broadcast.id) {
-            info!("Got already seen broadcast");
-            return Ok(None);
+
+        let tag: Tag = opts.deserialize_from(&mut reader).unwrap();
+
+        match tag {
+            Tag::Operation {
+                operation_id
+            } => {
+                if self.seen_op_ids.contains(&operation_id) {
+                    // We've seen this data before, nothing to do
+                    info!("Got already seen broadcast with id {}", &operation_id);
+                    // necessary to advance the reader cursor and not start reading a new broadcast from this partially read one
+                    // at the next invocation of receive_item
+                    let _msg: GossipMessage = opts.deserialize_from(&mut reader).expect("error handling");
+                    return Ok(None);
+                }
+                info!("Got new broadcast with id {}", &operation_id);
+                self.seen_op_ids.insert(operation_id);
+
+                let msg: GossipMessage = opts.deserialize_from(&mut reader).expect("error handling");
+
+                // let op: Operation = opts.deserialize_from(&mut reader).expect("error handling");
+                {
+                    // This is where foca stops caring
+                    // If it were me, I'd stuff the bytes as-is into a channel
+                    // and have a separate task/thread consuming it.
+                    (self.message_handler)(msg.message_type, msg.message_payload.clone());
+                }
+
+                // This WAS new information, so we signal it to foca
+                debug!("Crafting broadcast with msg {:?}", msg);
+                let broadcast = self.craft_broadcast4(tag, msg);
+                // GossipMessage::new(MessageType::FullSync, vec!(1, 2))
+                Ok(Some(broadcast))
+            },
+          _ => Ok(None)
+
         }
-        self.seen_op_ids.insert(broadcast.id.clone());
-        (self.message_handler)(MessageType::FullSync, Bytes::from(broadcast.data.clone()));
-        info!("Received new data, broadcasting it ...");
-        Ok(Some(broadcast))
+        // let id:Uuid = opts.deserialize_from(&mut reader).unwrap();
+        // info!("Received broadcast with id {}", &id);
+
+        // if self.seen_op_ids.contains(&id) {
+        //     info!("Got already seen broadcast with id {}", &id);
+        //     return Ok(None);
+        // }
+
+        // // let id:Uuid = opts.deserialize_from(&mut reader).unwrap();
+        // // let content:Vec<u8> = opts.deserialize_from(&mut reader).unwrap();
+        // let broadcast:RawBroadcast = opts.deserialize_from(&mut reader).unwrap();
+        // // let broadcast = RawBroadcast {
+        // //     id: id,
+        // //     data: content,
+        // // };
+        // info!("Received RawBroadcast: {:?}", broadcast.clone());
+        // // let mut read_data:Vec<u8> = vec![];
+        // // reader.read_to_end(&mut read_data)
+        // // .expect("could not read payload");
+        // // let bytes = Bytes::from(read_data);
+        // // info!("Raw data: {:?}", bytes);
+        // if self.seen_op_ids.contains(&broadcast.id) {
+        //     info!("Got already seen broadcast");
+        //     return Ok(None);
+        // }
+        // self.seen_op_ids.insert(broadcast.id.clone());
+        // (self.message_handler)(MessageType::FullSync, Bytes::from(broadcast.data.clone()));
+        // info!("Received new data, broadcasting it ...");
+        // Ok(Some(broadcast))
+
+
+
+
+
+
+
+
+
+
+
         // let raw_data = data.chunk();
         // info!("Raw data: {:?}", raw_data);
         // // Broadcast payload is u16-length prefixed

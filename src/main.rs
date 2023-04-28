@@ -55,8 +55,8 @@ fn cli() -> Command {
         
 }
 
-fn handle_message(msg_type:MessageType, msg_payload:Bytes) {
-    info!("Received message of type {:?} with size {}", msg_type, msg_payload.len());
+fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
+    info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
     // let doc = Automerge::load(&msg_payload);
     // info!("Received document: {:?}", doc);
 }
@@ -144,10 +144,13 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let mut broadcast_handler = Handler::new(HashSet::new(), vec![], HashMap::new(), handle_message);
     let broadcast_data = get_broadcast_data();
-    let broadcast_msg = broadcast_handler.craft_broadcast3(RawBroadcast {
-        id: Uuid::new_v4(),
-        data: broadcast_data,
-    });
+    let broadcast_msg = broadcast_handler.craft_broadcast4(Operation {
+        operation_id: Uuid::new_v4()
+    }, GossipMessage::new(FullSync, broadcast_data));
+    // let broadcast_msg = broadcast_handler.craft_broadcast3(RawBroadcast {
+    //     id: Uuid::new_v4(),
+    //     data: broadcast_data,
+    // });
     // let msg = GossipMessage::new(FullSync, broadcast_data);
     // let broadcast_msg = broadcast_handler.craft_broadcast2(Operation {
     //     operation_id: Uuid::new_v4()
@@ -157,7 +160,7 @@ async fn main() -> Result<(), anyhow::Error> {
     
     if should_broadcast {
         // let msg_bytes:Vec<u8> = broadcast_msg.data.into_iter().collect();
-        match foca.add_broadcast(&broadcast_msg) {
+        match foca.add_broadcast(broadcast_msg.as_ref()) {
             Ok(_) => info!("Added broadcast"),
             Err(e) => error!("Could not add broadcast: {}", e),
         }
