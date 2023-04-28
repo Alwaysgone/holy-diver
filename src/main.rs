@@ -55,8 +55,17 @@ fn cli() -> Command {
 
 fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
     info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
-    let doc = Automerge::load(&msg_payload);
-    info!("Received document: {:?}", doc);
+    match msg_type {
+        FullSync => {
+            match Automerge::load(&msg_payload) {
+                Ok(doc) => info!("Received document: {:?}", doc),
+                Err(e) => error!("Could not parse FullSync message: {}", e),
+            }
+        },
+        other => {
+            info!("Handling of message type {:?} currently not implemented", other);
+        }
+    }
 }
 
 fn get_broadcast_data() -> Vec<u8> {
