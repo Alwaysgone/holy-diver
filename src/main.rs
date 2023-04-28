@@ -2,28 +2,26 @@ mod swim;
 
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::Arc, collections::{HashMap, HashSet}, num::NonZeroU8,
+    sync::Arc, collections::HashSet, num::NonZeroU8,
 };
 use clap::{arg, Command, builder::{NonEmptyStringValueParser, BoolValueParser}};
 use rand::{rngs::StdRng, SeedableRng};
 use foca::{Config, Foca, Notification, PostcardCodec, Timer};
 use tokio::{net::UdpSocket, sync::mpsc};
-use log::{info, error};
+use log::{info, error, trace};
 use bytes::{BufMut, Bytes, BytesMut};
 use dotenv::dotenv;
 
 use swim::core::{AccumulatingRuntime};
 use swim::types::ID;
 use swim::members::Members;
-use swim::broadcast::{Handler, MessageType, MessageType::FullSync, GossipMessage, Tag::Operation};
+use swim::broadcast::{Handler, MessageType, MessageType::FullSync, GossipMessage, Tag::SyncOperation};
 
 use automerge::transaction::Transactable;
 use automerge::AutomergeError;
 use automerge::ObjType;
 use automerge::{Automerge, ROOT};
 use uuid::Uuid;
-
-use crate::swim::broadcast::RawBroadcast;
 
 fn cli() -> Command {
     Command::new("holy-diver")
@@ -57,8 +55,8 @@ fn cli() -> Command {
 
 fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
     info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
-    // let doc = Automerge::load(&msg_payload);
-    // info!("Received document: {:?}", doc);
+    let doc = Automerge::load(&msg_payload);
+    info!("Received document: {:?}", doc);
 }
 
 fn get_broadcast_data() -> Vec<u8> {
@@ -133,33 +131,15 @@ async fn main() -> Result<(), anyhow::Error> {
     .unwrap_or(&false)
     .to_owned();
 
-    // let data_dir = matches.get_one::<String>("data-dir")
-    // .map(|dd| Path::new(dd))
-    // .unwrap_or(Path::new("./data"));
-    // info!("Using {:?} as data dir", data_dir);
-    // fs::create_dir_all(data_dir)?;
-
-    // let file_name = data_dir.join("nodes.txt").into_os_string().into_string().unwrap();
-    // info!("Writing nodes to {}", file_name);
-
-    let mut broadcast_handler = Handler::new(HashSet::new(), vec![], HashMap::new(), handle_message);
+    let mut broadcast_handler = Handler::new(HashSet::new(), handle_message);
     let broadcast_data = get_broadcast_data();
-    let broadcast_msg = broadcast_handler.craft_broadcast4(Operation {
+    let broadcast_msg = broadcast_handler.craft_broadcast(SyncOperation {
         operation_id: Uuid::new_v4()
     }, GossipMessage::new(FullSync, broadcast_data));
-    // let broadcast_msg = broadcast_handler.craft_broadcast3(RawBroadcast {
-    //     id: Uuid::new_v4(),
-    //     data: broadcast_data,
-    // });
-    // let msg = GossipMessage::new(FullSync, broadcast_data);
-    // let broadcast_msg = broadcast_handler.craft_broadcast2(Operation {
-    //     operation_id: Uuid::new_v4()
-    // }, &broadcast_data);
-    let mut foca = Foca::with_custom_broadcast(identity, config, rng, PostcardCodec, broadcast_handler);
-    // let mut foca = Foca::new(identity, config, rng, PostcardCodec);
+
+    let mut foca = Foca::with_custom_broadcast(identity.clone(), config, rng, PostcardCodec, broadcast_handler);
     
     if should_broadcast {
-        // let msg_bytes:Vec<u8> = broadcast_msg.data.into_iter().collect();
         match foca.add_broadcast(broadcast_msg.as_ref()) {
             Ok(_) => info!("Added broadcast"),
             Err(e) => error!("Could not add broadcast: {}", e),
@@ -202,6 +182,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // instead.
     let mut runtime = AccumulatingRuntime::new();
     let mut members = Members::new();
+    members.add_member(identity);
     let tx_foca_copy = tx_foca.clone();
     tokio::spawn(async move {
         while let Some(input) = rx_foca.recv().await {
@@ -209,11 +190,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
             let result = match input {
                 Input::Event(timer) => foca.handle_timer(timer, &mut runtime),
-                Input::Data(data) => {
-                    // info!("Input::Data: {:?}", data);
-                    let res = foca.handle_data(&data, &mut runtime);
-                    res
-                },
+                Input::Data(data) => foca.handle_data(&data, &mut runtime),
                 Input::Announce(dst) => foca.announce(dst, &mut runtime),
             };
 
@@ -283,8 +260,6 @@ async fn main() -> Result<(), anyhow::Error> {
 
             if active_list_has_changed {
                 info!("New members list: {:?}", members);
-                // do_the_file_replace_dance(&file_name, members.addrs())
-                //     .expect("Can write the file alright");
             }
         }
     });
@@ -303,16 +278,11 @@ async fn main() -> Result<(), anyhow::Error> {
             // sending: decompress, decrypt, remove the envelope
             databuf.put_slice(&recv_buf[..len]);
             let data_to_send = databuf.split().freeze();
-            // info!("Data to send: {:?}", data_to_send);
+            trace!("Data to send: {:?}", data_to_send);
             // And simply forward it to foca
             let _ignored_send_error = tx_foca.send(Input::Data(data_to_send)).await;
             },
             Err(e) => error!("got an error receiving: {}", e),
         }
-        // // Accordinly, we would undo everything that's done prior to
-        // // sending: decompress, decrypt, remove the envelope
-        // databuf.put_slice(&recv_buf[..len]);
-        // // And simply forward it to foca
-        // let _ignored_send_error = tx_foca.send(Input::Data(databuf.split().freeze())).await;
     }
 }

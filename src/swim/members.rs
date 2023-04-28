@@ -43,7 +43,8 @@ impl Members {
         effectively_down
     }
 
-    pub fn addrs(&self) -> impl Iterator<Item = &SocketAddr> {
+    // prefixed with _ to prevent compiler warning not sure if this will be needed
+    pub fn _addrs(&self) -> impl Iterator<Item = &SocketAddr> {
         self.0.keys()
     }
 }

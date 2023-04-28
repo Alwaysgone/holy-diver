@@ -3,13 +3,12 @@ use std::{
 };
 use bytes::{BufMut, Bytes, BytesMut};
 use foca::{Identity, Notification, Runtime, Timer};
-use log::info;
+use log::trace;
 
 pub struct AccumulatingRuntime<T> {
     pub to_send: Vec<(T, Bytes)>,
     pub to_schedule: Vec<(Duration, Timer<T>)>,
     pub notifications: Vec<Notification<T>>,
-    buf: BytesMut,
 }
 
 impl<T: Identity> Runtime<T> for AccumulatingRuntime<T> {
@@ -24,11 +23,10 @@ impl<T: Identity> Runtime<T> for AccumulatingRuntime<T> {
     }
 
     fn send_to(&mut self, to: T, data: &[u8]) {
-        // let mut packet = self.buf.split();
         let mut packet = BytesMut::new();
         packet.put_slice(data);
         let packet_to_send = packet.freeze();
-        // info!("Packet to send: {:?}", packet_to_send);
+        trace!("Packet to send: {:?}", packet_to_send);
         self.to_send.push((to, packet_to_send));
     }
 
@@ -44,7 +42,6 @@ impl<T> AccumulatingRuntime<T> {
             to_send: Vec::new(),
             to_schedule: Vec::new(),
             notifications: Vec::new(),
-            buf: BytesMut::new(),
         }
     }
 
