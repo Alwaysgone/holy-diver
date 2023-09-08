@@ -15,7 +15,7 @@ use dotenv::dotenv;
 use swim::core::{AccumulatingRuntime};
 use swim::types::ID;
 use swim::members::Members;
-use swim::broadcast::{Handler, MessageType, MessageType::FullSync, GossipMessage, Tag::SyncOperation};
+use swim::broadcast::{Handler, MessageType, MessageType::FullSync, GossipMessage, Tag::SyncOperation, DataHandler};
 
 use automerge::transaction::Transactable;
 use automerge::AutomergeError;
@@ -54,22 +54,35 @@ fn cli() -> Command {
         
 }
 
-fn handle_message(msg_type:MessageType, msg_payload:Vec<u8>) {
-    info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
-    match msg_type {
-        FullSync => {
-            match Automerge::load(&msg_payload) {
-                Ok(doc) => info!("Received document: {:?}", doc),
-                Err(e) => error!("Could not parse FullSync message: {}", e),
+pub struct MyDataHandler {
+    data:Automerge,
+}
+
+impl DataHandler for MyDataHandler {
+    fn handle_message(&mut self, msg_type:MessageType, msg_payload:Vec<u8>) {
+        info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
+        match msg_type {
+            FullSync => {
+                match Automerge::load(&msg_payload) {
+                    Ok(doc) => {
+                        info!("Received document: {:?}", doc);
+                        self.data = doc;
+                    },
+                    Err(e) => error!("Could not parse FullSync message: {}", e),
+                }
+            },
+            other => {
+                info!("Handling of message type {:?} currently not implemented", other);
             }
-        },
-        other => {
-            info!("Handling of message type {:?} currently not implemented", other);
         }
+    }
+
+    fn get_state(&mut self) -> Vec<u8> {
+        self.data.save()
     }
 }
 
-fn get_broadcast_data() -> Vec<u8> {
+fn get_initial_data() -> Automerge {
     let mut data = Automerge::new();
     let _heads = data.get_heads();
     data.transact::<_,_,AutomergeError>(|tx| {
@@ -80,6 +93,11 @@ fn get_broadcast_data() -> Vec<u8> {
     })
     .unwrap()
     .result;
+    data
+}
+
+fn get_broadcast_data() -> Vec<u8> {
+    let mut data = get_initial_data();
     data.save()
     // let v = vec!(1, 2);
     // v
@@ -136,7 +154,11 @@ async fn main() -> Result<(), anyhow::Error> {
     .unwrap_or(&false)
     .to_owned();
 
-    let mut broadcast_handler = Handler::new(HashSet::new(), handle_message);
+    let data_handler = Box::new(MyDataHandler {
+        data: get_initial_data()
+    });
+
+    let mut broadcast_handler = Handler::new(HashSet::new(), data_handler);
     let broadcast_data = get_broadcast_data();
     let broadcast_msg = broadcast_handler.craft_broadcast(SyncOperation {
         operation_id: Uuid::new_v4()

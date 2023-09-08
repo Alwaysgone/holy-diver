@@ -8,6 +8,7 @@ use bytes::{Bytes, BytesMut, BufMut,};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use log::{debug, info};
+use chrono::{NaiveDateTime};
 
 use foca::{BroadcastHandler, Invalidates};
 
@@ -32,6 +33,11 @@ pub enum Tag {
         // E.g.: members may receive operations out of order;
         // If the storage doesn't handle that correctly you'll
         // need to do it yourself
+    },
+
+    StartupMessage {
+        startup_time: NaiveDateTime,
+        node_id: Uuid,
     },
 
     // For scenarios where the interactions are very clear, we can
@@ -97,18 +103,24 @@ pub enum MessageType {
     IncSync,
 }
 
-pub struct Handler {
+pub struct Handler<'a> {
     seen_op_ids: HashSet<Uuid>,
-    message_handler: fn(MessageType, Vec<u8>),
+    data_handler: Box<dyn DataHandler + Send + 'a>,
 }
 
-impl Handler {
+pub trait DataHandler {
+    fn handle_message(&mut self, msg_type:MessageType, data:Vec<u8>);
+
+    fn get_state(&mut self) -> Vec<u8>;
+}
+
+impl Handler<'_> {
     pub fn new(
         seen_op_ids: HashSet<Uuid>,
-        message_handler: fn(MessageType, Vec<u8>)) -> Self {
+        data_handler: Box<dyn DataHandler + Send>,) -> Self {
         Self {
             seen_op_ids,
-            message_handler
+            data_handler,
         }
     }
 
@@ -124,7 +136,7 @@ impl Handler {
     }
 }
 
-impl<T> BroadcastHandler<T> for Handler {
+impl<T> BroadcastHandler<T> for Handler<'_> {
     type Broadcast = Broadcast;
     type Error = String;
 
@@ -160,13 +172,20 @@ impl<T> BroadcastHandler<T> for Handler {
                     // This is where foca stops caring
                     // If it were me, I'd stuff the bytes as-is into a channel
                     // and have a separate task/thread consuming it.
-                    (self.message_handler)(msg.message_type, msg.message_payload.clone());
+                    self.data_handler.handle_message(msg.message_type, msg.message_payload.clone());
                 }
 
                 // This WAS new information, so we signal it to foca
                 debug!("Crafting broadcast with msg {:?}", msg);
                 let broadcast = self.craft_broadcast(tag, msg);
                 Ok(Some(broadcast))
+            },
+            Tag::StartupMessage {
+                startup_time,
+                node_id
+            } => {
+                //TODO check if node_id and startup_time combo was already seen and if not send full state up date message
+                Ok(None)
             },
           _ => Ok(None)
 
