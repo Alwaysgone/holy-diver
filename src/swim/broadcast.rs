@@ -8,7 +8,7 @@ use bytes::{Bytes, BytesMut, BufMut,};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use log::{debug, info};
-use chrono::{NaiveDateTime};
+use chrono::NaiveDateTime;
 
 use foca::{BroadcastHandler, Invalidates};
 
@@ -185,7 +185,11 @@ impl<T> BroadcastHandler<T> for Handler<'_> {
                 node_id
             } => {
                 //TODO check if node_id and startup_time combo was already seen and if not send full state up date message
-                Ok(None)
+                let current_state = self.data_handler.get_state();
+                let broadcast = self.craft_broadcast(Tag::SyncOperation {
+                    operation_id: Uuid::new_v4()
+                }, GossipMessage::new(MessageType::FullSync, current_state));
+                Ok(Some(broadcast))
             },
           _ => Ok(None)
 
