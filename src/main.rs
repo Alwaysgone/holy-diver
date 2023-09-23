@@ -408,6 +408,10 @@ async fn main() -> Result<(), anyhow::Error> {
         let _ignored_send_error = tx_foca.send(Input::Announce(dst)).await;
     }
 
+    tokio::spawn(async {
+        
+    });
+
     // And finally, we receive forever
     let mut databuf = BytesMut::new();
     loop {
