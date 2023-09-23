@@ -121,9 +121,11 @@ impl MyDataHandler {
     fn store(&mut self) {
         let automerge_doc_path = self.data_path.join("automerge.dat");
 
+        info!("Storing to {} ...", automerge_doc_path.display());
         let mut file = fs::OpenOptions::new()
         .write(true)
         .truncate(true)
+        .create(true)
         .open(automerge_doc_path.clone())
         .unwrap();
 
@@ -409,7 +411,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     tokio::spawn(async {
-        
+
     });
 
     // And finally, we receive forever
