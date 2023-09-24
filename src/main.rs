@@ -2,7 +2,7 @@ mod swim;
 
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::Arc, collections::HashSet, num::NonZeroU8, path::PathBuf, io::{Read, Write}, fs, fs::File,
+    sync::Arc, collections::HashSet, num::NonZeroU8, path::PathBuf,
 };
 use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
 use rand::{rngs::StdRng, SeedableRng};
@@ -12,27 +12,21 @@ use log::{info, error, trace};
 use bytes::{BufMut, Bytes, BytesMut};
 use dotenv::dotenv;
 
-use swim::core::{AccumulatingRuntime};
+use swim::core::AccumulatingRuntime;
 use swim::types::ID;
 use swim::members::Members;
-use swim::broadcast::{Handler, MessageType, MessageType::FullSync, GossipMessage, Tag::SyncOperation, DataHandler};
+use swim::broadcast::{Handler, MessageType::FullSync, GossipMessage, Tag::SyncOperation};
 
-use automerge::{transaction::Transactable, ActorId, AutomergeError, ObjType, Automerge, ROOT};
+use automerge::{transaction::Transactable, AutomergeError, ObjType, Automerge, ROOT};
 use uuid::Uuid;
-use std::io::BufReader;
+
+use crate::swim::core::MyDataHandler;
 
 fn cli() -> Command {
     Command::new("holy-diver")
         .about("You expected SWIM but it was me DIO!")
         .arg_required_else_help(false)
-        // .arg(Arg::new("bind-address")
-    // .help("Socket address to bind to. Example: 127.0.0.1:8080""))
         .args(&[
-            // Arg::new("bind-address")
-            // .long("bind-address")
-            // .help("Socket address to bind to. Example: 127.0.0.1:8080")
-            // .value_parser(NonEmptyStringValueParser::new())
-            // ,
         arg!(--"bind-address" <BIND_ADDRESS> "Socket address to bind to. Example: 127.0.0.1:8080")
         .value_parser(NonEmptyStringValueParser::new())
         .id("bind-address"),
@@ -52,153 +46,7 @@ fn cli() -> Command {
         
 }
 
-pub struct MyDataHandler {
-    data:Automerge,
-    data_path:PathBuf,
-}
-
-impl DataHandler for MyDataHandler {
-
-    fn handle_message(&mut self, msg_type:MessageType, msg_payload:Vec<u8>) {
-        info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
-        match msg_type {
-            FullSync => {
-                match Automerge::load(&msg_payload) {
-                    Ok(doc) => {
-                        info!("Received document: {:?}", doc);
-                        self.merge(doc);
-                    },
-                    Err(e) => error!("Could not parse FullSync message: {}", e),
-                }
-            },
-            other => {
-                info!("Handling of message type {:?} currently not implemented", other);
-            }
-        }
-    }
-
-    fn get_state(&mut self) -> Vec<u8> {
-        self.data.save()
-    }
-}
-
-impl MyDataHandler {
-    fn new(data_dir:&PathBuf) -> Self {
-        let automerge_doc_path = data_dir.join("automerge.dat");
-        let automerge_doc;
-        if automerge_doc_path.exists() {
-            let mut read_buffer = Vec::new();    
-            automerge_doc = match File::open(automerge_doc_path.clone())
-            .map(|f| BufReader::new(f))
-            .map(|mut r| r.read_to_end(&mut read_buffer)) {
-                Ok(_) => {
-                    match Automerge::load(&read_buffer) {
-                        Ok(doc) => {
-                            info!("Loaded state from {}", automerge_doc_path.display());
-                            doc
-                        },
-                        Err(e) => {
-                            error!("Could not load state from {}: {}", automerge_doc_path.display(), e);
-                            get_initial_state()
-                        }
-                    }
-                },
-                Err(e) => {
-                    error!("Could not read file at {}: {}", automerge_doc_path.display(), e);
-                    get_initial_state()
-                },
-            };
-        } else {
-            info!("No state found at {}, creating initial state ...", automerge_doc_path.display());
-            automerge_doc = get_initial_state();
-        }
-        MyDataHandler {
-            data: automerge_doc,
-            data_path: data_dir.to_owned(),
-        }
-    }
-
-    fn store(&mut self) {
-        let automerge_doc_path = self.data_path.join("automerge.dat");
-
-        info!("Storing to {} ...", automerge_doc_path.display());
-        let mut file = fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(automerge_doc_path.clone())
-        .unwrap();
-
-        match file.write_all(&self.data.save()) {
-            Ok(_) => {
-                info!("Wrote current state to {}", automerge_doc_path.display());
-            },
-            Err(e) => {
-                error!("Could not write current state to {}: {}", automerge_doc_path.display(), e);
-            }
-        }        
-    }
-
-    fn merge(&mut self, mut other:Automerge) {
-        match self.data.merge(&mut other) {
-            Ok(cs) => {
-                info!("Merged {} changes into local state", cs.len());
-                self.store();
-            },
-            Err(e) => {
-                error!("Could not merge changes into local state: {}", e);
-            },
-        }
-    }
-}
-
-fn get_initial_state() -> Automerge {
-    Automerge::new()
-    .with_actor(ActorId::from("default".as_bytes()))
-}
-
-fn load_data(data_dir:&PathBuf) -> Automerge {
-    let automerge_doc_path = data_dir.join("automerge.dat");
-    let automerge_doc;
-    if automerge_doc_path.exists() {
-        let mut read_buffer = Vec::new();
-        // let file_to_read = File::open(automerge_doc_path.clone())
-        // .map(|f| BufReader::new(f))
-        // .map(|mut r| r.read_to_end(&mut read_buffer))
-        // .map(|c| Automerge::load(&read_buffer))
-        // .map_err(|e| {
-        //     error!("Could not load state from {}: {}", automerge_doc_path.display(), e);
-        //     get_initial_state()
-        // })
-        // .unwrap();
-
-        automerge_doc = match File::open(automerge_doc_path.clone())
-        .map(|f| BufReader::new(f))
-        .map(|mut r| r.read_to_end(&mut read_buffer)) {
-            Ok(_) => {
-                match Automerge::load(&read_buffer) {
-                    Ok(doc) => {
-                        info!("Loaded state from {}", automerge_doc_path.display());
-                        doc
-                    },
-                    Err(e) => {
-                        error!("Could not load state from {}: {}", automerge_doc_path.display(), e);
-                        get_initial_state()
-                    }
-                }
-            },
-            Err(e) => {
-                error!("Could not read file at {}: {}", automerge_doc_path.display(), e);
-                get_initial_state()
-            },
-        };
-    } else {
-        automerge_doc = get_initial_state();
-    }
-    automerge_doc
-}
-
-fn get_initial_data() -> Automerge {
+fn get_test_data() -> Automerge {
     let mut data = Automerge::new();
     let _heads = data.get_heads();
     data.transact::<_,_,AutomergeError>(|tx| {
@@ -213,7 +61,7 @@ fn get_initial_data() -> Automerge {
 }
 
 fn get_broadcast_data() -> Vec<u8> {
-    let mut data = get_initial_data();
+    let mut data = get_test_data();
     data.save()
     // let v = vec!(1, 2);
     // v

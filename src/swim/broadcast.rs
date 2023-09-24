@@ -105,7 +105,7 @@ pub enum MessageType {
 
 pub struct Handler<'a> {
     seen_op_ids: HashSet<Uuid>,
-    data_handler: Box<dyn DataHandler + Send + 'a>,
+    data_handler: Box<dyn DataHandler + Send + Sync + 'a>,
 }
 
 pub trait DataHandler {
@@ -117,7 +117,7 @@ pub trait DataHandler {
 impl Handler<'_> {
     pub fn new(
         seen_op_ids: HashSet<Uuid>,
-        data_handler: Box<dyn DataHandler + Send>,) -> Self {
+        data_handler: Box<dyn DataHandler + Send + Sync>,) -> Self {
         Self {
             seen_op_ids,
             data_handler,
@@ -143,6 +143,7 @@ impl<T> BroadcastHandler<T> for Handler<'_> {
     fn receive_item(
         &mut self,
         data: impl bytes::Buf,
+        _sender: Option<&T>,
     ) -> Result<Option<Self::Broadcast>, Self::Error> {
         info!("Receiving item ...");
         let opts = bincode::DefaultOptions::new();
@@ -181,8 +182,8 @@ impl<T> BroadcastHandler<T> for Handler<'_> {
                 Ok(Some(broadcast))
             },
             Tag::StartupMessage {
-                startup_time,
-                node_id
+                startup_time: _,
+                node_id: _,
             } => {
                 //TODO check if node_id and startup_time combo was already seen and if not send full state up date message
                 let current_state = self.data_handler.get_state();

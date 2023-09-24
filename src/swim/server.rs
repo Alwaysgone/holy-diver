@@ -22,6 +22,7 @@ async fn update_field(field:web::Path<String>
     , data_handler:web::Data<Arc<MyDataHandler>>) -> HttpResponse {
         //TODO somehow get foca or another handler here to be able to publish a broadcast
         // would be better to just make a trait for every component and then figure out how to pass things around
+
     HttpResponse::Ok().finish()
 }
 
