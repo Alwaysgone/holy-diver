@@ -20,7 +20,8 @@ use swim::broadcast::{Handler, MessageType::FullSync, GossipMessage, Tag::SyncOp
 use automerge::{transaction::Transactable, AutomergeError, ObjType, Automerge, ROOT};
 use uuid::Uuid;
 
-use crate::swim::core::MyDataHandler;
+use swim::{core::MyDataHandler, foca::FocaRuntime, core::FocaRuntimeConfig};
+
 
 fn cli() -> Command {
     Command::new("holy-diver")
@@ -65,6 +66,69 @@ fn get_broadcast_data() -> Vec<u8> {
     data.save()
     // let v = vec!(1, 2);
     // v
+}
+
+// #[tokio::main(flavor = "current_thread")]
+async fn main2() -> Result<(), anyhow::Error> {
+    dotenv().ok();
+    env_logger::init();
+    let matches = cli().get_matches();
+    info!("Starting with matches: {:?}", matches);
+    
+    let bind_addr = matches.get_one::<String>("bind-address")
+    .map(|ba| SocketAddr::from_str(ba.as_str()).expect(&format!("could not parse binding address as SocketAddr '{}'", ba)))
+    .unwrap_or(SocketAddr::from_str("127.0.0.1:9000").unwrap());
+    info!("Binding to {}", bind_addr);
+
+    let identity = matches.get_one::<String>("identity")
+    .map(|id| SocketAddr::from_str(id.as_str()).expect(&format!("could not parse identity as SocketAddr '{}'", id)))
+    .map(|id| ID::new(id))
+    .unwrap_or(ID::new(bind_addr));
+    info!("Using identity {}", bind_addr); 
+
+    let announce_to = matches.get_one::<String>("announce-to")
+    .map(|a| SocketAddr::from_str(a.as_str()).expect(&format!("could not parse announce-to as SocketAddr '{}'", a)))
+    .map(|a| ID::new(a));
+    if announce_to.is_some() {
+        info!("Announcing to {:?}", announce_to.clone().unwrap());
+    } else {
+        info!("Starting up as single swimmer");
+    }
+
+    let data_dir = matches.get_one::<PathBuf>("data-dir")
+    .expect("clap should have provided a default value for data-dir");
+    info!("Using {} as data dir", data_dir.display());
+
+    let should_broadcast = matches.get_one::<bool>("broadcast")
+    .unwrap_or(&false)
+    .to_owned();
+    
+    let foca_config = {
+        let mut c = Config::simple();
+        // With this setting you can suspend (^Z) one process,
+        // wait for it the member to be declared down then resume
+        // it (fg) and foca should recover by itself
+        c.notify_down_members = true;
+        // limits the 
+        c.max_transmissions = NonZeroU8::new(2).unwrap();
+        c
+    };
+    let runtime_config = FocaRuntimeConfig {
+        identity: identity,
+        data_dir: data_dir.to_owned(),
+        bind_addr: bind_addr,
+        announce_to: announce_to,
+        foca_config: foca_config,
+    };
+    let mut foca_runtime = FocaRuntime::new(runtime_config).await?;
+    // foca_runtime.listen().await;
+    // tokio::spawn(async move {
+    //     tokio::spawn(async {
+    //         foca_runtime.listen().await;
+    //     });
+    //     foca_runtime.init().await;
+    // });
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]

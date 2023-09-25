@@ -103,9 +103,9 @@ pub enum MessageType {
     IncSync,
 }
 
-pub struct Handler<'a> {
+pub struct Handler {
     seen_op_ids: HashSet<Uuid>,
-    data_handler: Box<dyn DataHandler + Send + Sync + 'a>,
+    data_handler: Box<dyn DataHandler + Send + Sync>,
 }
 
 pub trait DataHandler {
@@ -114,7 +114,7 @@ pub trait DataHandler {
     fn get_state(&mut self) -> Vec<u8>;
 }
 
-impl Handler<'_> {
+impl Handler {
     pub fn new(
         seen_op_ids: HashSet<Uuid>,
         data_handler: Box<dyn DataHandler + Send + Sync>,) -> Self {
@@ -136,7 +136,7 @@ impl Handler<'_> {
     }
 }
 
-impl<T> BroadcastHandler<T> for Handler<'_> {
+impl<T> BroadcastHandler<T> for Handler {
     type Broadcast = Broadcast;
     type Error = String;
 

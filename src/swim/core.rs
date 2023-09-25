@@ -164,3 +164,9 @@ pub struct FocaRuntimeConfig {
     pub announce_to: Option<ID>,
     pub foca_config: Config
 }
+
+pub trait HolyDiverController {
+    fn get_field(&mut self, field_name: String) -> Result<String, anyhow::Error>;
+
+    fn set_field(&mut self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
+}
