@@ -114,6 +114,17 @@ pub trait DataHandler {
     fn get_state(&mut self) -> Vec<u8>;
 }
 
+pub fn craft_broadcast(tag: Tag, item: GossipMessage) -> Broadcast {
+    let mut writer = BytesMut::new().writer();
+    let opts = bincode::DefaultOptions::new();
+    opts.serialize_into(&mut writer, &tag).expect("error handling");
+    opts.serialize_into(&mut writer, &item).expect("error handling");
+    Broadcast {
+        tag: tag,
+        data: writer.into_inner().freeze()
+    }
+}
+
 impl Handler {
     pub fn new(
         seen_op_ids: HashSet<Uuid>,
