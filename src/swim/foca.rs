@@ -1,7 +1,8 @@
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::Arc, collections::HashSet, num::NonZeroU8, path::PathBuf, error::Error,
+    sync::{Arc, Mutex}, collections::HashSet, num::NonZeroU8, path::PathBuf, error::Error,
 };
+use automerge::{Automerge, AutoCommit};
 use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
 use rand::{rngs::StdRng, SeedableRng};
 use foca::{Config, Foca, Notification, PostcardCodec, Timer};
@@ -21,6 +22,7 @@ enum Input<T> {
     Data(Bytes),
     Announce(T),
 }
+#[derive(Debug)]
 pub enum FocaCommand {
     SendBroadcast((Tag, GossipMessage)),
     HandleTimer(Timer<ID>),
@@ -28,9 +30,9 @@ pub enum FocaCommand {
     Announce(ID),
 }
 
-pub async fn setup_foca(runtime_config: FocaRuntimeConfig) -> Result<Sender<(Tag, GossipMessage)>, anyhow::Error> {
+pub async fn setup_foca(runtime_config: FocaRuntimeConfig, state:Mutex<AutoCommit>) -> Result<Sender<FocaCommand>, anyhow::Error> {
     let rng = StdRng::from_entropy();
-    let data_handler = Box::new(MyDataHandler::new(&runtime_config.data_dir));
+    let data_handler = Box::new(MyDataHandler::new(&runtime_config.data_dir, state));
     let broadcast_handler = Handler::new(HashSet::new(), data_handler);
     let identity = runtime_config.identity;
     let announce_to = runtime_config.announce_to;
@@ -69,7 +71,7 @@ pub async fn setup_foca(runtime_config: FocaRuntimeConfig) -> Result<Sender<(Tag
     let mut members = Members::new();
     members.add_member(identity);
     let tx_foca_copy = tx_foca.clone();
-    let (broadcast_sender, mut broadcast_receiver) = mpsc::channel::<(Tag, GossipMessage)>(100);
+    // let (broadcast_sender, broadcast_receiver) = mpsc::channel::<(Tag, GossipMessage)>(100);
     
     // tokio::spawn(async move {
     //     while let Some(broadcast_data_to_send) = broadcast_receiver.recv().await {
@@ -86,16 +88,16 @@ pub async fn setup_foca(runtime_config: FocaRuntimeConfig) -> Result<Sender<(Tag
             match foca_event {
                 FocaCommand::SendBroadcast((tag, message)) => {    
                     let broadcast = craft_broadcast(tag, message);
-                    foca.add_broadcast(broadcast.as_ref());
+                    let _ignore_result = foca.add_broadcast(broadcast.as_ref());
                 },
                 FocaCommand::HandleTimer(timer) => {
-                    foca.handle_timer(timer, &mut runtime);
+                    let _ignore_result = foca.handle_timer(timer, &mut runtime);
                 },
                 FocaCommand::HandleData(data) => {
-                    foca.handle_data(&data, &mut runtime);
+                    let _ignore_result = foca.handle_data(&data, &mut runtime);
                 },
                 FocaCommand::Announce(destination) => {
-                    foca.announce(destination, &mut runtime);
+                    let _ignore_result = foca.announce(destination, &mut runtime);
                 },
             }
 
@@ -154,6 +156,7 @@ pub async fn setup_foca(runtime_config: FocaRuntimeConfig) -> Result<Sender<(Tag
         }
     });
 
+    let foca_command_sender_clone = foca_command_sender.clone();
     tokio::spawn(async move {
         while let Some(input) = rx_foca.recv().await {
             // debug_assert_eq!(0, runtime.backlog());
@@ -162,9 +165,9 @@ pub async fn setup_foca(runtime_config: FocaRuntimeConfig) -> Result<Sender<(Tag
                 // Input::Event(timer) => foca.handle_timer(timer, &mut runtime),
                 // Input::Data(data) => foca.handle_data(&data, &mut runtime),
                 // Input::Announce(dst) => foca.announce(dst, &mut runtime),
-                Input::Event(timer) => foca_command_sender.send(FocaCommand::HandleTimer(timer)).await,
-                Input::Data(data) => foca_command_sender.send(FocaCommand::HandleData(data)).await,
-                Input::Announce(destination) => foca_command_sender.send(FocaCommand::Announce(destination)).await,
+                Input::Event(timer) => foca_command_sender_clone.send(FocaCommand::HandleTimer(timer)).await,
+                Input::Data(data) => foca_command_sender_clone.send(FocaCommand::HandleData(data)).await,
+                Input::Announce(destination) => foca_command_sender_clone.send(FocaCommand::Announce(destination)).await,
             };
 
             // Every public foca result yields `()` on success, so there's
@@ -263,7 +266,7 @@ pub async fn setup_foca(runtime_config: FocaRuntimeConfig) -> Result<Sender<(Tag
         }
     });
 
-    Ok(broadcast_sender)
+    Ok(foca_command_sender)
 }
 
 pub struct FocaRuntime {
@@ -280,9 +283,9 @@ pub struct FocaRuntime {
 
 impl FocaRuntime {
 
-    pub async fn new<'a>(runtime_config: FocaRuntimeConfig) -> Result<FocaRuntime, anyhow::Error> {
+    pub async fn new<'a>(runtime_config: FocaRuntimeConfig, state:Mutex<AutoCommit>) -> Result<FocaRuntime, anyhow::Error> {
         let rng = StdRng::from_entropy();
-        let data_handler = Box::new(MyDataHandler::new(&runtime_config.data_dir));
+        let data_handler = Box::new(MyDataHandler::new(&runtime_config.data_dir, state));
         let broadcast_handler = Handler::new(HashSet::new(), data_handler);
 
         let foca = Foca::with_custom_broadcast(runtime_config.identity.clone(),

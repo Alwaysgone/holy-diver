@@ -2,26 +2,28 @@ mod swim;
 
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::Arc, collections::HashSet, num::NonZeroU8, path::PathBuf,
+    sync::{Arc, Mutex}, collections::HashSet, num::NonZeroU8, path::PathBuf,
 };
 use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
 use rand::{rngs::StdRng, SeedableRng};
 use foca::{Config, Foca, Notification, PostcardCodec, Timer};
-use tokio::{net::UdpSocket, sync::mpsc};
+use tokio::{net::UdpSocket, sync::mpsc::{self, Sender}};
 use log::{info, error, trace};
 use bytes::{BufMut, Bytes, BytesMut};
 use dotenv::dotenv;
 
-use swim::core::AccumulatingRuntime;
+use swim::{core::{AccumulatingRuntime, HolyDiverController}, foca::FocaCommand};
 use swim::types::ID;
 use swim::members::Members;
 use swim::broadcast::{Handler, MessageType::FullSync, GossipMessage, Tag::SyncOperation};
 
-use automerge::{transaction::Transactable, AutomergeError, ObjType, Automerge, ROOT};
+use automerge::{transaction::Transactable, AutomergeError, ObjType, Automerge, ROOT, AutoCommit, ReadDoc};
 use uuid::Uuid;
 
-use swim::{core::MyDataHandler, foca::FocaRuntime, core::FocaRuntimeConfig};
+use swim::{core::MyDataHandler, foca::FocaCommand::SendBroadcast, foca::setup_foca, core::FocaRuntimeConfig, server::host_server};
+use anyhow::Result;
 
+use crate::swim::core::read_state_from_disk;
 
 fn cli() -> Command {
     Command::new("holy-diver")
@@ -43,6 +45,10 @@ fn cli() -> Command {
         arg!(-b --broadcast <BROADCAST> "Flag that indicates whether a broadcast should be sent on startup or not")
         .value_parser(BoolValueParser::new())
         .id("broadcast"),
+        arg!(-p --port <REST_PORT> "Port for the REST endpoint")
+        .value_parser(value_parser!(u16).range(1..))
+        .default_value(OsStr::from("9090"))
+        .id("rest-port")
         ])
         
 }
@@ -68,8 +74,39 @@ fn get_broadcast_data() -> Vec<u8> {
     // v
 }
 
-// #[tokio::main(flavor = "current_thread")]
-async fn main2() -> Result<(), anyhow::Error> {
+struct HolyDiverRestController {
+    foca_command_sender: Sender<FocaCommand>,
+    local_state: AutoCommit,
+}
+
+impl HolyDiverController for HolyDiverRestController {
+    fn get_field(&self, field_name: String) -> Result<String> {
+        let state = self.local_state;
+
+        //TODO fix this
+        let field_value = state.get(ROOT, field_name)?
+            .map(|v| v.0)
+            .ok_or_else(|| 0)
+            .unwrap()
+            .into_string()
+            .unwrap();
+        Ok(field_value)
+    }
+
+    fn set_field(&self, field_name: String, field_value: String) -> Result<()> {
+        let state = self.local_state;
+        state.put(ROOT, field_name, field_value)?;
+        // broadcasting the change so that all nodes get this update
+        self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
+            operation_id: Uuid::new_v4()
+        }, GossipMessage::new(FullSync, state.save()))));
+        // self.foca.add_broadcast(broadcast_msg.as_ref())?;
+        Ok(())
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), anyhow::Error> {
     dotenv().ok();
     env_logger::init();
     let matches = cli().get_matches();
@@ -98,6 +135,10 @@ async fn main2() -> Result<(), anyhow::Error> {
     let data_dir = matches.get_one::<PathBuf>("data-dir")
     .expect("clap should have provided a default value for data-dir");
     info!("Using {} as data dir", data_dir.display());
+
+    let rest_port = matches.get_one::<u16>("rest-port")
+    .expect("clap should have provided a default value for rest-port");
+    info!("Using {} as rest port", rest_port);
 
     let should_broadcast = matches.get_one::<bool>("broadcast")
     .unwrap_or(&false)
@@ -120,226 +161,233 @@ async fn main2() -> Result<(), anyhow::Error> {
         announce_to: announce_to,
         foca_config: foca_config,
     };
-    let mut foca_runtime = FocaRuntime::new(runtime_config).await?;
-    // foca_runtime.listen().await;
-    // tokio::spawn(async move {
-    //     tokio::spawn(async {
-    //         foca_runtime.listen().await;
-    //     });
-    //     foca_runtime.init().await;
-    // });
+    let state = read_state_from_disk(data_dir);
+    let inital_state = Mutex::from(state.clone());
+    let inital_state2 = Mutex::from(state.clone());;
+    let foca_command_sender = setup_foca(runtime_config, inital_state).await?;
+    if(should_broadcast) {
+        let broadcast_data = get_broadcast_data();
+        foca_command_sender.send(SendBroadcast((SyncOperation {
+            operation_id: Uuid::new_v4()
+        }, GossipMessage::new(FullSync, broadcast_data)))).await?;
+    }
+    let rest_controller = Arc::from(HolyDiverRestController{
+        foca_command_sender: foca_command_sender.clone(),
+        local_state: inital_state2,
+    });
+    host_server(rest_port.to_owned(), rest_controller).await?;
     Ok(())
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), anyhow::Error> {
-    dotenv().ok();
-    env_logger::init();
-    let matches = cli().get_matches();
+// #[tokio::main(flavor = "current_thread")]
+// async fn main2() -> Result<(), anyhow::Error> {
+//     dotenv().ok();
+//     env_logger::init();
+//     let matches = cli().get_matches();
 
-    info!("Starting with matches: {:?}", matches);
+//     info!("Starting with matches: {:?}", matches);
 
-    let rng = StdRng::from_entropy();
-    let config = {
-        let mut c = Config::simple();
-        // With this setting you can suspend (^Z) one process,
-        // wait for it the member to be declared down then resume
-        // it (fg) and foca should recover by itself
-        c.notify_down_members = true;
-        // limits the 
-        c.max_transmissions = NonZeroU8::new(2).unwrap();
-        c
-    };
+//     let rng = StdRng::from_entropy();
+//     let config = {
+//         let mut c = Config::simple();
+//         // With this setting you can suspend (^Z) one process,
+//         // wait for it the member to be declared down then resume
+//         // it (fg) and foca should recover by itself
+//         c.notify_down_members = true;
+//         // limits the 
+//         c.max_transmissions = NonZeroU8::new(2).unwrap();
+//         c
+//     };
 
-    let buf_len = config.max_packet_size.get();
-    let mut recv_buf = vec![0u8; buf_len];
+//     let buf_len = config.max_packet_size.get();
+//     let mut recv_buf = vec![0u8; buf_len];
 
-    let bind_addr = matches.get_one::<String>("bind-address")
-    .map(|ba| SocketAddr::from_str(ba.as_str()).expect(&format!("could not parse binding address as SocketAddr '{}'", ba)))
-    .unwrap_or(SocketAddr::from_str("127.0.0.1:9000").unwrap());
-    info!("Binding to {}", bind_addr);
+//     let bind_addr = matches.get_one::<String>("bind-address")
+//     .map(|ba| SocketAddr::from_str(ba.as_str()).expect(&format!("could not parse binding address as SocketAddr '{}'", ba)))
+//     .unwrap_or(SocketAddr::from_str("127.0.0.1:9000").unwrap());
+//     info!("Binding to {}", bind_addr);
 
-    let identity = matches.get_one::<String>("identity")
-    .map(|id| SocketAddr::from_str(id.as_str()).expect(&format!("could not parse identity as SocketAddr '{}'", id)))
-    .map(|id| ID::new(id))
-    .unwrap_or(ID::new(bind_addr));
-    info!("Using identity {}", bind_addr); 
+//     let identity = matches.get_one::<String>("identity")
+//     .map(|id| SocketAddr::from_str(id.as_str()).expect(&format!("could not parse identity as SocketAddr '{}'", id)))
+//     .map(|id| ID::new(id))
+//     .unwrap_or(ID::new(bind_addr));
+//     info!("Using identity {}", bind_addr); 
 
-    let announce_to = matches.get_one::<String>("announce-to")
-    .map(|a| SocketAddr::from_str(a.as_str()).expect(&format!("could not parse announce-to as SocketAddr '{}'", a)))
-    .map(|a| ID::new(a));
-    if announce_to.is_some() {
-        info!("Announcing to {:?}", announce_to.clone().unwrap());
-    } else {
-        info!("Starting up as single swimmer");
-    }
+//     let announce_to = matches.get_one::<String>("announce-to")
+//     .map(|a| SocketAddr::from_str(a.as_str()).expect(&format!("could not parse announce-to as SocketAddr '{}'", a)))
+//     .map(|a| ID::new(a));
+//     if announce_to.is_some() {
+//         info!("Announcing to {:?}", announce_to.clone().unwrap());
+//     } else {
+//         info!("Starting up as single swimmer");
+//     }
 
-    let data_dir = matches.get_one::<PathBuf>("data-dir")
-    .expect("clap should have provided a default value for data-dir");
-    info!("Using {} as data dir", data_dir.display());
+//     let data_dir = matches.get_one::<PathBuf>("data-dir")
+//     .expect("clap should have provided a default value for data-dir");
+//     info!("Using {} as data dir", data_dir.display());
 
-    let should_broadcast = matches.get_one::<bool>("broadcast")
-    .unwrap_or(&false)
-    .to_owned();
+//     let should_broadcast = matches.get_one::<bool>("broadcast")
+//     .unwrap_or(&false)
+//     .to_owned();
 
-    let data_handler = Box::new(MyDataHandler::new(data_dir));
+//     let data_handler = Box::new(MyDataHandler::new(data_dir));
 
-    let mut broadcast_handler = Handler::new(HashSet::new(), data_handler);
-    let broadcast_data = get_broadcast_data();
-    let broadcast_msg = broadcast_handler.craft_broadcast(SyncOperation {
-        operation_id: Uuid::new_v4()
-    }, GossipMessage::new(FullSync, broadcast_data));
+//     let mut broadcast_handler = Handler::new(HashSet::new(), data_handler);
+//     let broadcast_data = get_broadcast_data();
+//     let broadcast_msg = broadcast_handler.craft_broadcast(SyncOperation {
+//         operation_id: Uuid::new_v4()
+//     }, GossipMessage::new(FullSync, broadcast_data));
 
-    let mut foca = Foca::with_custom_broadcast(identity.clone(), config, rng, PostcardCodec, broadcast_handler);
+//     let mut foca = Foca::with_custom_broadcast(identity.clone(), config, rng, PostcardCodec, broadcast_handler);
     
-    if should_broadcast {
-        match foca.add_broadcast(broadcast_msg.as_ref()) {
-            Ok(_) => info!("Added broadcast"),
-            Err(e) => error!("Could not add broadcast: {}", e),
-        }
-    } else {
-        info!("Not broadcasting");
-    }
+//     if should_broadcast {
+//         match foca.add_broadcast(broadcast_msg.as_ref()) {
+//             Ok(_) => info!("Added broadcast"),
+//             Err(e) => error!("Could not add broadcast: {}", e),
+//         }
+//     } else {
+//         info!("Not broadcasting");
+//     }
 
-    let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
+//     let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
 
-    // We'll create a task responsible to sending data through the
-    // socket.
-    // These are what we use to communicate with it
-    let (tx_send_data, mut rx_send_data) = mpsc::channel::<(SocketAddr, Bytes)>(100);
-    // The socket writing task
-    let write_socket = Arc::clone(&socket);
-    tokio::spawn(async move {
-        while let Some((dst, data)) = rx_send_data.recv().await {
-            // A more reasonable implementation would do some more stuff
-            // here before sending, like:
-            //  * zlib or something else to compress the data
-            //  * encryption (shared key, AES most likely)
-            //  * an envelope with tag+version+checksum to allow
-            //    protocol evolution
-            let _ignored_send_result = write_socket.send_to(&data, &dst).await;
-        }
-    });
+//     // We'll create a task responsible to sending data through the
+//     // socket.
+//     // These are what we use to communicate with it
+//     let (tx_send_data, mut rx_send_data) = mpsc::channel::<(SocketAddr, Bytes)>(100);
+//     // The socket writing task
+//     let write_socket = Arc::clone(&socket);
+//     tokio::spawn(async move {
+//         while let Some((dst, data)) = rx_send_data.recv().await {
+//             // A more reasonable implementation would do some more stuff
+//             // here before sending, like:
+//             //  * zlib or something else to compress the data
+//             //  * encryption (shared key, AES most likely)
+//             //  * an envelope with tag+version+checksum to allow
+//             //    protocol evolution
+//             let _ignored_send_result = write_socket.send_to(&data, &dst).await;
+//         }
+//     });
 
-    // We'll also launch a task to manage Foca. Since there are timers
-    // involved, one simple way to do it is unifying the input:
-    enum Input<T> {
-        Event(Timer<T>),
-        Data(Bytes),
-        Announce(T),
-    }
-    // And communicating via channels
-    let (tx_foca, mut rx_foca) = mpsc::channel(100);
-    // Another alternative would be putting a Lock around Foca, but
-    // yours truly likes to hide behind (the lock inside) channels
-    // instead.
-    let mut runtime = AccumulatingRuntime::new();
-    let mut members = Members::new();
-    members.add_member(identity);
-    let tx_foca_copy = tx_foca.clone();
-    tokio::spawn(async move {
-        while let Some(input) = rx_foca.recv().await {
-            debug_assert_eq!(0, runtime.backlog());
+//     // We'll also launch a task to manage Foca. Since there are timers
+//     // involved, one simple way to do it is unifying the input:
+//     enum Input<T> {
+//         Event(Timer<T>),
+//         Data(Bytes),
+//         Announce(T),
+//     }
+//     // And communicating via channels
+//     let (tx_foca, mut rx_foca) = mpsc::channel(100);
+//     // Another alternative would be putting a Lock around Foca, but
+//     // yours truly likes to hide behind (the lock inside) channels
+//     // instead.
+//     let mut runtime = AccumulatingRuntime::new();
+//     let mut members = Members::new();
+//     members.add_member(identity);
+//     let tx_foca_copy = tx_foca.clone();
+//     tokio::spawn(async move {
+//         while let Some(input) = rx_foca.recv().await {
+//             debug_assert_eq!(0, runtime.backlog());
 
-            let result = match input {
-                Input::Event(timer) => foca.handle_timer(timer, &mut runtime),
-                Input::Data(data) => foca.handle_data(&data, &mut runtime),
-                Input::Announce(dst) => foca.announce(dst, &mut runtime),
-            };
+//             let result = match input {
+//                 Input::Event(timer) => foca.handle_timer(timer, &mut runtime),
+//                 Input::Data(data) => foca.handle_data(&data, &mut runtime),
+//                 Input::Announce(dst) => foca.announce(dst, &mut runtime),
+//             };
 
-            // Every public foca result yields `()` on success, so there's
-            // nothing to do with Ok
-            if let Err(error) = result {
-                // And we'd decide what to do with each error, but Foca
-                // is pretty tolerant so we just log them and pretend
-                // all is fine
-                error!("Ignored Error: {}", error);
-            }
+//             // Every public foca result yields `()` on success, so there's
+//             // nothing to do with Ok
+//             if let Err(error) = result {
+//                 // And we'd decide what to do with each error, but Foca
+//                 // is pretty tolerant so we just log them and pretend
+//                 // all is fine
+//                 error!("Ignored Error: {}", error);
+//             }
 
-            // Now we react to what happened.
-            // This is how we enable async: buffer one single interaction
-            // and then drain the runtime.
+//             // Now we react to what happened.
+//             // This is how we enable async: buffer one single interaction
+//             // and then drain the runtime.
 
-            // First we submit everything that needs to go to the network
-            while let Some((dst, data)) = runtime.to_send.pop() {
-                // ToSocketAddrs would be the fancy thing to use here
-                let _ignored_send_result = tx_send_data.send((dst.addr, data)).await;
-            }
+//             // First we submit everything that needs to go to the network
+//             while let Some((dst, data)) = runtime.to_send.pop() {
+//                 // ToSocketAddrs would be the fancy thing to use here
+//                 let _ignored_send_result = tx_send_data.send((dst.addr, data)).await;
+//             }
 
-            // Then schedule what needs to be scheduled
-            while let Some((delay, event)) = runtime.to_schedule.pop() {
-                let own_input_handle = tx_foca_copy.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(delay).await;
-                    let _ignored_send_error = own_input_handle.send(Input::Event(event)).await;
-                });
-            }
+//             // Then schedule what needs to be scheduled
+//             while let Some((delay, event)) = runtime.to_schedule.pop() {
+//                 let own_input_handle = tx_foca_copy.clone();
+//                 tokio::spawn(async move {
+//                     tokio::time::sleep(delay).await;
+//                     let _ignored_send_error = own_input_handle.send(Input::Event(event)).await;
+//                 });
+//             }
 
-            // And finally react to notifications.
-            //
-            // Here we could do smarter things to keep other actors in
-            // the system up-to-date with the cluster state.
-            // We could, for example:
-            //
-            //  * Have a broadcast channel where we submit the MemberUp
-            //    and MemberDown notifications to everyone and each one
-            //    keeps a lock-free version of the list
-            //
-            //  * Update a shared/locked Vec that every consumer has
-            //    read access
-            //
-            // But since this is an agent, we simply write to a file
-            // so other proccesses periodically open()/read()/close()
-            // to figure out the cluster members.
-            let mut active_list_has_changed = false;
-            while let Some(notification) = runtime.notifications.pop() {
-                match notification {
-                    Notification::MemberUp(id) => {
-                        info!("member with id {:?} up", id);
-                        active_list_has_changed |= members.add_member(id);
-                    },
-                    Notification::MemberDown(id) => {
-                        info!("member with id {:?} down", id);
-                        active_list_has_changed |= members.remove_member(id);
-                    },
-                    Notification::Idle => {
-                        info!("cluster empty");
-                    },
-                    other => {
-                        info!("unhandled notification {:?}", other);
-                    }
-                }
-            }
+//             // And finally react to notifications.
+//             //
+//             // Here we could do smarter things to keep other actors in
+//             // the system up-to-date with the cluster state.
+//             // We could, for example:
+//             //
+//             //  * Have a broadcast channel where we submit the MemberUp
+//             //    and MemberDown notifications to everyone and each one
+//             //    keeps a lock-free version of the list
+//             //
+//             //  * Update a shared/locked Vec that every consumer has
+//             //    read access
+//             //
+//             // But since this is an agent, we simply write to a file
+//             // so other proccesses periodically open()/read()/close()
+//             // to figure out the cluster members.
+//             let mut active_list_has_changed = false;
+//             while let Some(notification) = runtime.notifications.pop() {
+//                 match notification {
+//                     Notification::MemberUp(id) => {
+//                         info!("member with id {:?} up", id);
+//                         active_list_has_changed |= members.add_member(id);
+//                     },
+//                     Notification::MemberDown(id) => {
+//                         info!("member with id {:?} down", id);
+//                         active_list_has_changed |= members.remove_member(id);
+//                     },
+//                     Notification::Idle => {
+//                         info!("cluster empty");
+//                     },
+//                     other => {
+//                         info!("unhandled notification {:?}", other);
+//                     }
+//                 }
+//             }
 
-            if active_list_has_changed {
-                info!("New members list: {:?}", members);
-            }
-        }
-    });
+//             if active_list_has_changed {
+//                 info!("New members list: {:?}", members);
+//             }
+//         }
+//     });
 
-    // Foca is running, we can tell it to announce to our target
-    if let Some(dst) = announce_to {
-        let _ignored_send_error = tx_foca.send(Input::Announce(dst)).await;
-    }
+//     // Foca is running, we can tell it to announce to our target
+//     if let Some(dst) = announce_to {
+//         let _ignored_send_error = tx_foca.send(Input::Announce(dst)).await;
+//     }
 
-    tokio::spawn(async {
+//     tokio::spawn(async {
 
-    });
+//     });
 
-    // And finally, we receive forever
-    let mut databuf = BytesMut::new();
-    loop {
-        match socket.recv_from(&mut recv_buf).await {
-            Ok((len, _from_addr)) => {
-            // Accordinly, we would undo everything that's done prior to
-            // sending: decompress, decrypt, remove the envelope
-            databuf.put_slice(&recv_buf[..len]);
-            let data_to_send = databuf.split().freeze();
-            trace!("Data to send: {:?}", data_to_send);
-            // And simply forward it to foca
-            let _ignored_send_error = tx_foca.send(Input::Data(data_to_send)).await;
-            },
-            Err(e) => error!("got an error receiving: {}", e),
-        }
-    }
-}
+//     // And finally, we receive forever
+//     let mut databuf = BytesMut::new();
+//     loop {
+//         match socket.recv_from(&mut recv_buf).await {
+//             Ok((len, _from_addr)) => {
+//             // Accordinly, we would undo everything that's done prior to
+//             // sending: decompress, decrypt, remove the envelope
+//             databuf.put_slice(&recv_buf[..len]);
+//             let data_to_send = databuf.split().freeze();
+//             trace!("Data to send: {:?}", data_to_send);
+//             // And simply forward it to foca
+//             let _ignored_send_error = tx_foca.send(Input::Data(data_to_send)).await;
+//             },
+//             Err(e) => error!("got an error receiving: {}", e),
+//         }
+//     }
+// }

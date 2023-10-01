@@ -1,7 +1,7 @@
 use std::{
-    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr
+    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::Mutex
 };
-use automerge::{Automerge, ActorId};
+use automerge::{Automerge, ActorId, AutoCommit};
 use bytes::{BufMut, Bytes, BytesMut};
 use foca::{Identity, Notification, Runtime, Timer, Config};
 use log::{info, error, trace};
@@ -53,8 +53,40 @@ impl<T> AccumulatingRuntime<T> {
 }
 
 pub struct MyDataHandler {
-    data:Automerge,
+    data:Mutex<AutoCommit>,
     data_path:PathBuf,
+}
+
+pub fn read_state_from_disk(data_dir:&PathBuf) -> AutoCommit {
+    let automerge_doc_path = data_dir.join("automerge.dat");
+    let automerge_doc;
+    if automerge_doc_path.exists() {
+        let mut read_buffer = Vec::new();    
+        automerge_doc = match File::open(automerge_doc_path.clone())
+        .map(|f| BufReader::new(f))
+        .map(|mut r| r.read_to_end(&mut read_buffer)) {
+            Ok(_) => {
+                match AutoCommit::load(&read_buffer) {
+                    Ok(doc) => {
+                        info!("Loaded state from {}", automerge_doc_path.display());
+                        doc
+                    },
+                    Err(e) => {
+                        error!("Could not load state from {}: {}", automerge_doc_path.display(), e);
+                        get_initial_state()
+                    }
+                }
+            },
+            Err(e) => {
+                error!("Could not read file at {}: {}", automerge_doc_path.display(), e);
+                get_initial_state()
+            },
+        };
+    } else {
+        info!("No state found at {}, creating initial state ...", automerge_doc_path.display());
+        automerge_doc = get_initial_state();
+    }
+    automerge_doc
 }
 
 impl DataHandler for MyDataHandler {
@@ -63,7 +95,7 @@ impl DataHandler for MyDataHandler {
         info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
         match msg_type {
             FullSync => {
-                match Automerge::load(&msg_payload) {
+                match AutoCommit::load(&msg_payload) {
                     Ok(doc) => {
                         info!("Received document: {:?}", doc);
                         self.merge(doc);
@@ -78,42 +110,14 @@ impl DataHandler for MyDataHandler {
     }
 
     fn get_state(&mut self) -> Vec<u8> {
-        self.data.save()
+        self.data.get_mut().unwrap().save()
     }
 }
 
 impl MyDataHandler {
-    pub fn new(data_dir:&PathBuf) -> Self {
-        let automerge_doc_path = data_dir.join("automerge.dat");
-        let automerge_doc;
-        if automerge_doc_path.exists() {
-            let mut read_buffer = Vec::new();    
-            automerge_doc = match File::open(automerge_doc_path.clone())
-            .map(|f| BufReader::new(f))
-            .map(|mut r| r.read_to_end(&mut read_buffer)) {
-                Ok(_) => {
-                    match Automerge::load(&read_buffer) {
-                        Ok(doc) => {
-                            info!("Loaded state from {}", automerge_doc_path.display());
-                            doc
-                        },
-                        Err(e) => {
-                            error!("Could not load state from {}: {}", automerge_doc_path.display(), e);
-                            get_initial_state()
-                        }
-                    }
-                },
-                Err(e) => {
-                    error!("Could not read file at {}: {}", automerge_doc_path.display(), e);
-                    get_initial_state()
-                },
-            };
-        } else {
-            info!("No state found at {}, creating initial state ...", automerge_doc_path.display());
-            automerge_doc = get_initial_state();
-        }
+    pub fn new(data_dir:&PathBuf, intial_state:Mutex<AutoCommit>) -> Self {
         MyDataHandler {
-            data: automerge_doc,
+            data: intial_state,
             data_path: data_dir.to_owned(),
         }
     }
@@ -129,7 +133,7 @@ impl MyDataHandler {
         .open(automerge_doc_path.clone())
         .unwrap();
 
-        match file.write_all(&self.data.save()) {
+        match file.write_all(&self.data.get_mut().unwrap().save()) {
             Ok(_) => {
                 info!("Wrote current state to {}", automerge_doc_path.display());
             },
@@ -139,8 +143,8 @@ impl MyDataHandler {
         }        
     }
 
-    fn merge(&mut self, mut other:Automerge) {
-        match self.data.merge(&mut other) {
+    fn merge(&mut self, mut other:AutoCommit) {
+        match self.data.get_mut().unwrap().merge(&mut other) {
             Ok(cs) => {
                 info!("Merged {} changes into local state", cs.len());
                 self.store();
@@ -152,8 +156,8 @@ impl MyDataHandler {
     }
 }
 
-fn get_initial_state() -> Automerge {
-    Automerge::new()
+fn get_initial_state() -> AutoCommit {
+    AutoCommit::new()
     .with_actor(ActorId::from("default".as_bytes()))
 }
 
@@ -166,7 +170,7 @@ pub struct FocaRuntimeConfig {
 }
 
 pub trait HolyDiverController {
-    fn get_field(&mut self, field_name: String) -> Result<String, anyhow::Error>;
+    fn get_field(&self, field_name: String) -> Result<String, anyhow::Error>;
 
-    fn set_field(&mut self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
+    fn set_field(&self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
 }
