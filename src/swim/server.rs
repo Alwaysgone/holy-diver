@@ -1,6 +1,9 @@
+use std::cell::RefCell;
+use std::ops::DerefMut;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
+use actix_web::web::Data;
 use actix_web::{get, put, web, App, HttpRequest, HttpServer, HttpResponse};
 use automerge::{AutomergeError, AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use foca::{Foca, PostcardCodec};
@@ -29,21 +32,30 @@ async fn hello(req:HttpRequest) -> &'static str {
     "Hello world!\r\n"
 }
 
+#[get("/state/{field}")]
+async fn get_field(field:web::Path<String>
+    , controller:web::Data<Arc<Mutex<dyn HolyDiverController + Send + Sync>>>) -> HttpResponse {
+    let field_value = controller.lock().unwrap().get_field(field.to_string()).unwrap();
+    HttpResponse::Ok().body(format!("{}: {}", field.to_string(), field_value))
+}
+
 #[put("/state/{field}")]
 async fn update_field(field:web::Path<String>
     , web::Json(update): web::Json<FieldUpdate>
-    , controller:web::Data<Arc<dyn HolyDiverController + Send + Sync>>) -> HttpResponse {
+    , controller:web::Data<Arc<Mutex<dyn HolyDiverController + Send + Sync>>>) -> HttpResponse {
         //TODO somehow get foca or another handler here to be able to publish a broadcast
         // would be better to just make a trait for every component and then figure out how to pass things around
-        controller.set_field(field.to_string(), update.value);
+        controller.lock().unwrap().set_field(field.to_string(), update.value);
     HttpResponse::Ok().finish()
 }
 // same as fn host_server<T: HolyDiverController + Send + Sync>(port:u16, controller:&T)
-pub async fn host_server(port: u16, controller: Arc<dyn HolyDiverController + Send + Sync>) -> std::io::Result<()> {
+pub async fn host_server(port: u16, controller: Arc<Mutex<dyn HolyDiverController + Send + Sync>>) -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
-        .app_data(controller.clone())
+        .app_data(Data::new(controller.clone()))
         .service(hello)
+        .service(get_field)
+        .service(update_field)
     })
     .bind(("127.0.0.1", port))?
     .run()

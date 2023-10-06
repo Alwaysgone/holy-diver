@@ -1,5 +1,5 @@
 use std::{
-    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::Mutex
+    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::{Mutex, Arc}, cell::RefCell
 };
 use automerge::{Automerge, ActorId, AutoCommit};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -53,7 +53,7 @@ impl<T> AccumulatingRuntime<T> {
 }
 
 pub struct MyDataHandler {
-    data:Mutex<AutoCommit>,
+    data:Arc<Mutex<AutoCommit>>,
     data_path:PathBuf,
 }
 
@@ -110,44 +110,64 @@ impl DataHandler for MyDataHandler {
     }
 
     fn get_state(&mut self) -> Vec<u8> {
-        self.data.get_mut().unwrap().save()
+        self.data.lock().unwrap().save()
     }
 }
 
 impl MyDataHandler {
-    pub fn new(data_dir:&PathBuf, intial_state:Mutex<AutoCommit>) -> Self {
+    pub fn new(data_dir:&PathBuf, intial_state:Arc<Mutex<AutoCommit>>) -> Self {
         MyDataHandler {
             data: intial_state,
             data_path: data_dir.to_owned(),
         }
     }
 
-    fn store(&mut self) {
-        let automerge_doc_path = self.data_path.join("automerge.dat");
+    // fn store(&mut self) {
+    //     let automerge_doc_path = self.data_path.join("automerge.dat");
 
-        info!("Storing to {} ...", automerge_doc_path.display());
+    //     info!("Storing to {} ...", automerge_doc_path.display());
+    //     let mut file = fs::OpenOptions::new()
+    //     .write(true)
+    //     .truncate(true)
+    //     .create(true)
+    //     .open(automerge_doc_path.clone())
+    //     .unwrap();
+
+    //     match file.write_all(&self.data.lock().unwrap().save()) {
+    //         Ok(_) => {
+    //             info!("Wrote current state to {}", automerge_doc_path.display());
+    //         },
+    //         Err(e) => {
+    //             error!("Could not write current state to {}: {}", automerge_doc_path.display(), e);
+    //         }
+    //     }        
+    // }
+
+    fn store_data(mut data:AutoCommit, data_path:&PathBuf) {
         let mut file = fs::OpenOptions::new()
         .write(true)
         .truncate(true)
         .create(true)
-        .open(automerge_doc_path.clone())
+        .open(data_path.clone())
         .unwrap();
 
-        match file.write_all(&self.data.get_mut().unwrap().save()) {
+        match file.write_all(&data.save()) {
             Ok(_) => {
-                info!("Wrote current state to {}", automerge_doc_path.display());
+                info!("Wrote current state to {}", data_path.display());
             },
             Err(e) => {
-                error!("Could not write current state to {}: {}", automerge_doc_path.display(), e);
+                error!("Could not write current state to {}: {}", data_path.display(), e);
             }
-        }        
+        }   
     }
 
     fn merge(&mut self, mut other:AutoCommit) {
-        match self.data.get_mut().unwrap().merge(&mut other) {
+        let automerge_doc_path = self.data_path.join("automerge.dat");
+        let mut data = self.data.lock().unwrap();
+        match data.merge(&mut other) {
             Ok(cs) => {
                 info!("Merged {} changes into local state", cs.len());
-                self.store();
+                Self::store_data(data.to_owned(), &automerge_doc_path);
             },
             Err(e) => {
                 error!("Could not merge changes into local state: {}", e);
@@ -172,5 +192,5 @@ pub struct FocaRuntimeConfig {
 pub trait HolyDiverController {
     fn get_field(&self, field_name: String) -> Result<String, anyhow::Error>;
 
-    fn set_field(&self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
+    fn set_field(&mut self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
 }

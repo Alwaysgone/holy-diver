@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::{Arc, Mutex}, collections::HashSet, num::NonZeroU8, path::PathBuf, error::Error,
+    sync::{Arc, Mutex}, collections::HashSet, num::NonZeroU8, path::PathBuf, error::Error, cell::RefCell,
 };
 use automerge::{Automerge, AutoCommit};
 use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
@@ -30,7 +30,7 @@ pub enum FocaCommand {
     Announce(ID),
 }
 
-pub async fn setup_foca(runtime_config: FocaRuntimeConfig, state:Mutex<AutoCommit>) -> Result<Sender<FocaCommand>, anyhow::Error> {
+pub async fn setup_foca(runtime_config: FocaRuntimeConfig, state:Arc<Mutex<AutoCommit>>) -> Result<Sender<FocaCommand>, anyhow::Error> {
     let rng = StdRng::from_entropy();
     let data_handler = Box::new(MyDataHandler::new(&runtime_config.data_dir, state));
     let broadcast_handler = Handler::new(HashSet::new(), data_handler);
@@ -283,7 +283,7 @@ pub struct FocaRuntime {
 
 impl FocaRuntime {
 
-    pub async fn new<'a>(runtime_config: FocaRuntimeConfig, state:Mutex<AutoCommit>) -> Result<FocaRuntime, anyhow::Error> {
+    pub async fn new<'a>(runtime_config: FocaRuntimeConfig, state:Arc<Mutex<AutoCommit>>) -> Result<FocaRuntime, anyhow::Error> {
         let rng = StdRng::from_entropy();
         let data_handler = Box::new(MyDataHandler::new(&runtime_config.data_dir, state));
         let broadcast_handler = Handler::new(HashSet::new(), data_handler);

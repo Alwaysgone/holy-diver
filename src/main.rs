@@ -2,12 +2,12 @@ mod swim;
 
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::{Arc, Mutex}, collections::HashSet, num::NonZeroU8, path::PathBuf,
+    sync::{Arc, Mutex}, collections::HashSet, num::NonZeroU8, path::PathBuf, cell::RefCell, borrow::Borrow,
 };
 use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
 use rand::{rngs::StdRng, SeedableRng};
 use foca::{Config, Foca, Notification, PostcardCodec, Timer};
-use tokio::{net::UdpSocket, sync::mpsc::{self, Sender}};
+use tokio::{net::UdpSocket, sync::{mpsc::{self, Sender}, futures}, runtime::Handle};
 use log::{info, error, trace};
 use bytes::{BufMut, Bytes, BytesMut};
 use dotenv::dotenv;
@@ -76,15 +76,13 @@ fn get_broadcast_data() -> Vec<u8> {
 
 struct HolyDiverRestController {
     foca_command_sender: Sender<FocaCommand>,
-    local_state: AutoCommit,
+    local_state: Arc<Mutex<AutoCommit>>,
 }
 
 impl HolyDiverController for HolyDiverRestController {
     fn get_field(&self, field_name: String) -> Result<String> {
-        let state = self.local_state;
-
         //TODO fix this
-        let field_value = state.get(ROOT, field_name)?
+        let field_value = self.local_state.lock().unwrap().get(ROOT, field_name)?
             .map(|v| v.0)
             .ok_or_else(|| 0)
             .unwrap()
@@ -93,13 +91,16 @@ impl HolyDiverController for HolyDiverRestController {
         Ok(field_value)
     }
 
-    fn set_field(&self, field_name: String, field_value: String) -> Result<()> {
-        let state = self.local_state;
+    fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
+        let mut state = self.local_state.lock().unwrap();
         state.put(ROOT, field_name, field_value)?;
+        let handle = Handle::current();
         // broadcasting the change so that all nodes get this update
-        self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
-            operation_id: Uuid::new_v4()
-        }, GossipMessage::new(FullSync, state.save()))));
+        handle.block_on(
+            self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
+                operation_id: Uuid::new_v4()
+            }, GossipMessage::new(FullSync, state.save()))))
+        )?;
         // self.foca.add_broadcast(broadcast_msg.as_ref())?;
         Ok(())
     }
@@ -162,19 +163,20 @@ async fn main() -> Result<(), anyhow::Error> {
         foca_config: foca_config,
     };
     let state = read_state_from_disk(data_dir);
-    let inital_state = Mutex::from(state.clone());
-    let inital_state2 = Mutex::from(state.clone());;
-    let foca_command_sender = setup_foca(runtime_config, inital_state).await?;
+    let state_ref = Arc::from(Mutex::from(state));
+    // let inital_state = Mutex::from(state.clone());
+    // let inital_state2 = Mutex::from(state.clone());;
+    let foca_command_sender = setup_foca(runtime_config, state_ref.clone()).await?;
     if(should_broadcast) {
         let broadcast_data = get_broadcast_data();
         foca_command_sender.send(SendBroadcast((SyncOperation {
             operation_id: Uuid::new_v4()
         }, GossipMessage::new(FullSync, broadcast_data)))).await?;
     }
-    let rest_controller = Arc::from(HolyDiverRestController{
+    let rest_controller = Arc::from(Mutex::from(HolyDiverRestController{
         foca_command_sender: foca_command_sender.clone(),
-        local_state: inital_state2,
-    });
+        local_state: state_ref,
+    }));
     host_server(rest_port.to_owned(), rest_controller).await?;
     Ok(())
 }
