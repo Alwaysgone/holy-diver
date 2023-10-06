@@ -1,7 +1,7 @@
 use std::{
     time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::{Mutex, Arc}, cell::RefCell
 };
-use automerge::{Automerge, ActorId, AutoCommit};
+use automerge::{Automerge, ActorId, AutoCommit, transaction::Transactable, ObjType, ROOT};
 use bytes::{BufMut, Bytes, BytesMut};
 use foca::{Identity, Notification, Runtime, Timer, Config};
 use log::{info, error, trace};
@@ -177,8 +177,10 @@ impl MyDataHandler {
 }
 
 fn get_initial_state() -> AutoCommit {
-    AutoCommit::new()
-    .with_actor(ActorId::from("default".as_bytes()))
+    let mut state = AutoCommit::new()
+    .with_actor(ActorId::from("default".as_bytes()));
+    state.put_object(ROOT, "values", ObjType::Map).unwrap();
+    state
 }
 
 pub struct FocaRuntimeConfig {

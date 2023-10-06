@@ -53,18 +53,23 @@ fn cli() -> Command {
         
 }
 
-fn get_test_data() -> Automerge {
-    let mut data = Automerge::new();
-    let _heads = data.get_heads();
-    data.transact::<_,_,AutomergeError>(|tx| {
-        let memos = tx.put_object(ROOT, "memos", ObjType::Map).unwrap();
-        let memo1 = tx.put(&memos, "Memo1", "Do the thing").unwrap();
-        let memo2 = tx.put(&memos, "Memo2", "Add automerge support").unwrap();
-        Ok((memo1, memo2))
-    })
-    .unwrap()
-    .result;
-    data
+fn get_test_data() -> AutoCommit {
+    let mut state = AutoCommit::new();
+    let values = state.put_object(ROOT, "values", ObjType::Map).unwrap();
+    state.put(&values, "name", "dio").unwrap();
+    state
+
+//     let mut data = Automerge::new();
+//     let _heads = data.get_heads();
+//     data.transact::<_,_,AutomergeError>(|tx| {
+//         let memos = tx.put_object(ROOT, "memos", ObjType::Map).unwrap();
+//         let memo1 = tx.put(&memos, "Memo1", "Do the thing").unwrap();
+//         let memo2 = tx.put(&memos, "Memo2", "Add automerge support").unwrap();
+//         Ok((memo1, memo2))
+//     })
+//     .unwrap()
+//     .result;
+//     data
 }
 
 fn get_broadcast_data() -> Vec<u8> {
@@ -74,33 +79,42 @@ fn get_broadcast_data() -> Vec<u8> {
     // v
 }
 
-struct HolyDiverRestController {
+pub struct HolyDiverRestController {
     foca_command_sender: Sender<FocaCommand>,
     local_state: Arc<Mutex<AutoCommit>>,
 }
 
-impl HolyDiverController for HolyDiverRestController {
-    fn get_field(&self, field_name: String) -> Result<String> {
-        //TODO fix this
-        let field_value = self.local_state.lock().unwrap().get(ROOT, field_name)?
-            .map(|v| v.0)
-            .ok_or_else(|| 0)
-            .unwrap()
-            .into_string()
-            .unwrap();
-        Ok(field_value)
+impl HolyDiverRestController {
+    fn get_field(&self, field_name: String) -> Option<String> {
+        let state = self.local_state.lock().unwrap();
+        let values = match state.get(ROOT, "values").unwrap() {
+            Some((automerge::Value::Object(ObjType::Map), values)) => values,
+            _ => panic!("a map with name values is expected in the ROOT of the AutoMerge document"),
+        };
+        state.get(&values, field_name).unwrap()
+            .map(|(v,_)| v)
+            .map(|v| v.to_string())
+        // //TODO fix this
+        // let field_value = self.local_state.lock().unwrap().get(ROOT, field_name)?
+        //     .map(|v| v.0)
+        //     .ok_or_else(|| 0)
+        //     .unwrap()
+        //     .into_string()
+        //     .unwrap();
+        // // Ok(field_value)
     }
 
-    fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
+    async fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
         let mut state = self.local_state.lock().unwrap();
-        state.put(ROOT, field_name, field_value)?;
-        let handle = Handle::current();
+        let values = match state.get(ROOT, "values").unwrap() {
+            Some((automerge::Value::Object(ObjType::Map), values)) => values,
+            _ => panic!("a map with name values is expected in the ROOT of the AutoMerge document"),
+        };
+        state.put(&values, field_name, field_value)?;
         // broadcasting the change so that all nodes get this update
-        handle.block_on(
-            self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
-                operation_id: Uuid::new_v4()
-            }, GossipMessage::new(FullSync, state.save()))))
-        )?;
+        self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
+            operation_id: Uuid::new_v4()
+        }, GossipMessage::new(FullSync, state.save())))).await;
         // self.foca.add_broadcast(broadcast_msg.as_ref())?;
         Ok(())
     }
