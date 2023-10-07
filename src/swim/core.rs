@@ -49,7 +49,7 @@ impl<T> AccumulatingRuntime<T> {
     }
 }
 
-pub struct MyDataHandler {
+pub struct HolyDiverDataHandler {
     data: Mutex<AutoCommit>,
     data_path: PathBuf,
 }
@@ -86,7 +86,7 @@ pub fn read_state_from_disk(data_dir: &PathBuf) -> AutoCommit {
     automerge_doc
 }
 
-impl DataHandler for MyDataHandler {
+impl DataHandler for HolyDiverDataHandler {
 
     fn handle_message(&mut self, msg_type:MessageType, msg_payload:Vec<u8>) {
         info!("Received message of type {:?}: {:?}", msg_type, msg_payload);
@@ -111,10 +111,10 @@ impl DataHandler for MyDataHandler {
     }
 }
 
-impl MyDataHandler {
+impl HolyDiverDataHandler {
     pub fn new(data_dir: &PathBuf) -> Self {
         let initial_state = Mutex::from(read_state_from_disk(data_dir));
-        MyDataHandler {
+        HolyDiverDataHandler {
             data: initial_state,
             data_path: data_dir.to_owned(),
         }

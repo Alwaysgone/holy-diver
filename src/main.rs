@@ -21,7 +21,7 @@ use uuid::Uuid;
 use swim::{foca::FocaCommand::SendBroadcast, foca::setup_foca, core::FocaRuntimeConfig, server::host_server};
 use anyhow::Result;
 
-use crate::swim::core::MyDataHandler;
+use crate::swim::core::HolyDiverDataHandler;
 
 fn cli() -> Command {
     Command::new("holy-diver")
@@ -65,7 +65,7 @@ fn get_broadcast_data() -> Vec<u8> {
 
 pub struct HolyDiverController {
     foca_command_sender: Sender<FocaCommand>,
-    data_handler: Arc<Mutex<MyDataHandler>>,
+    data_handler: Arc<Mutex<HolyDiverDataHandler>>,
 }
 
 impl HolyDiverController {
@@ -142,7 +142,7 @@ async fn main() -> Result<(), anyhow::Error> {
     };
     // let state = read_state_from_disk(data_dir);
     // let state_ref = Arc::from(Mutex::from(state));
-    let data_handler = Arc::from(Mutex::from(MyDataHandler::new(&runtime_config.data_dir)));
+    let data_handler = Arc::from(Mutex::from(HolyDiverDataHandler::new(&runtime_config.data_dir)));
     let foca_command_sender = setup_foca(runtime_config, Box::new(data_handler.clone())).await?;
     if should_broadcast {
         let broadcast_data = get_broadcast_data();
