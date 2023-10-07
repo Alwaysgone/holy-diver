@@ -191,8 +191,8 @@ pub struct FocaRuntimeConfig {
     pub foca_config: Config
 }
 
-pub trait HolyDiverController {
-    fn get_field(&self, field_name: String) -> Result<String, anyhow::Error>;
+// pub trait HolyDiverController {
+//     fn get_field(&self, field_name: String) -> Result<String, anyhow::Error>;
 
-    fn set_field(&mut self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
-}
+//     fn set_field(&mut self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
+// }

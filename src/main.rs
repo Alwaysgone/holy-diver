@@ -2,17 +2,16 @@ mod swim;
 
 use std::{
     net::SocketAddr, str::FromStr,
-    sync::{Arc, Mutex}, collections::HashSet, num::NonZeroU8, path::PathBuf, cell::RefCell, borrow::Borrow,
+    sync::{Arc, Mutex}, num::NonZeroU8, path::PathBuf,
 };
 use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
-use rand::{rngs::StdRng, SeedableRng};
-use foca::{Config, Foca, Notification, PostcardCodec, Timer};
-use tokio::{net::UdpSocket, sync::{mpsc::{self, Sender}, futures}, runtime::Handle};
+use foca::Config;
+use tokio::{sync::{mpsc::{Sender}}};
 use log::{info, error, trace};
 use bytes::{BufMut, Bytes, BytesMut};
 use dotenv::dotenv;
 
-use swim::{core::{AccumulatingRuntime, HolyDiverController}, foca::FocaCommand};
+use swim::{core::AccumulatingRuntime, foca::FocaCommand};
 use swim::types::ID;
 use swim::members::Members;
 use swim::broadcast::{Handler, MessageType::FullSync, GossipMessage, Tag::SyncOperation};
@@ -58,33 +57,19 @@ fn get_test_data() -> AutoCommit {
     let values = state.put_object(ROOT, "values", ObjType::Map).unwrap();
     state.put(&values, "name", "dio").unwrap();
     state
-
-//     let mut data = Automerge::new();
-//     let _heads = data.get_heads();
-//     data.transact::<_,_,AutomergeError>(|tx| {
-//         let memos = tx.put_object(ROOT, "memos", ObjType::Map).unwrap();
-//         let memo1 = tx.put(&memos, "Memo1", "Do the thing").unwrap();
-//         let memo2 = tx.put(&memos, "Memo2", "Add automerge support").unwrap();
-//         Ok((memo1, memo2))
-//     })
-//     .unwrap()
-//     .result;
-//     data
 }
 
 fn get_broadcast_data() -> Vec<u8> {
     let mut data = get_test_data();
     data.save()
-    // let v = vec!(1, 2);
-    // v
 }
 
-pub struct HolyDiverRestController {
+pub struct HolyDiverController {
     foca_command_sender: Sender<FocaCommand>,
     local_state: Arc<Mutex<AutoCommit>>,
 }
 
-impl HolyDiverRestController {
+impl HolyDiverController {
     fn get_field(&self, field_name: String) -> Option<String> {
         let state = self.local_state.lock().unwrap();
         let values = match state.get(ROOT, "values").unwrap() {
@@ -94,14 +79,6 @@ impl HolyDiverRestController {
         state.get(&values, field_name).unwrap()
             .map(|(v,_)| v)
             .map(|v| v.to_string())
-        // //TODO fix this
-        // let field_value = self.local_state.lock().unwrap().get(ROOT, field_name)?
-        //     .map(|v| v.0)
-        //     .ok_or_else(|| 0)
-        //     .unwrap()
-        //     .into_string()
-        //     .unwrap();
-        // // Ok(field_value)
     }
 
     async fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
@@ -187,7 +164,7 @@ async fn main() -> Result<(), anyhow::Error> {
             operation_id: Uuid::new_v4()
         }, GossipMessage::new(FullSync, broadcast_data)))).await?;
     }
-    let rest_controller = Arc::from(Mutex::from(HolyDiverRestController{
+    let rest_controller = Arc::from(Mutex::from(HolyDiverController{
         foca_command_sender: foca_command_sender.clone(),
         local_state: state_ref,
     }));

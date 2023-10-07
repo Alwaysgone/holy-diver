@@ -12,12 +12,12 @@ use rand::rngs::StdRng;
 use serde::Deserialize;
 use tracing::field;
 use uuid::Uuid;
-use crate::HolyDiverRestController;
+use crate::HolyDiverController;
 use crate::{MyDataHandler, swim::broadcast::GossipMessage};
 
 use super::broadcast::craft_broadcast;
 use super::foca::FocaCommand;
-use super::{core::HolyDiverController, types::ID, broadcast::Handler};
+use super::{types::ID, broadcast::Handler};
 use crate::swim::broadcast::MessageType::FullSync;
 use crate::swim::broadcast::Tag::SyncOperation;
 use anyhow::Result;
@@ -35,7 +35,7 @@ async fn hello(req:HttpRequest) -> &'static str {
 
 #[get("/state/{field}")]
 async fn get_field(field:web::Path<String>
-    , controller:web::Data<Arc<Mutex<HolyDiverRestController>>>) -> HttpResponse {
+    , controller:web::Data<Arc<Mutex<HolyDiverController>>>) -> HttpResponse {
     let field_value = controller.lock().unwrap().get_field(field.to_string());
     info!("Got field value: {:?}", field_value);
     HttpResponse::Ok().body(format!("{}: {}", field.to_string(), field_value.unwrap_or("N/A".to_owned())))
@@ -44,14 +44,14 @@ async fn get_field(field:web::Path<String>
 #[put("/state/{field}")]
 async fn update_field(field:web::Path<String>
     , web::Json(update): web::Json<FieldUpdate>
-    , controller:web::Data<Arc<Mutex<HolyDiverRestController>>>) -> HttpResponse {
+    , controller:web::Data<Arc<Mutex<HolyDiverController>>>) -> HttpResponse {
         //TODO somehow get foca or another handler here to be able to publish a broadcast
         // would be better to just make a trait for every component and then figure out how to pass things around
     controller.lock().unwrap().set_field(field.to_string(), update.value).await.unwrap();
     HttpResponse::Ok().finish()
 }
 // same as fn host_server<T: HolyDiverController + Send + Sync>(port:u16, controller:&T)
-pub async fn host_server(port: u16, controller: Arc<Mutex<HolyDiverRestController>>) -> std::io::Result<()> {
+pub async fn host_server(port: u16, controller: Arc<Mutex<HolyDiverController>>) -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
         .app_data(Data::new(controller.clone()))
