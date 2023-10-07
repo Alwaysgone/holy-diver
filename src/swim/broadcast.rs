@@ -120,7 +120,7 @@ pub fn craft_broadcast(tag: Tag, item: GossipMessage) -> Broadcast {
     opts.serialize_into(&mut writer, &tag).expect("error handling");
     opts.serialize_into(&mut writer, &item).expect("error handling");
     Broadcast {
-        tag: tag,
+        tag,
         data: writer.into_inner().freeze()
     }
 }
@@ -141,7 +141,7 @@ impl Handler {
         opts.serialize_into(&mut writer, &tag).expect("error handling");
         opts.serialize_into(&mut writer, &item).expect("error handling");
         Broadcast {
-            tag: tag,
+            tag,
             data: writer.into_inner().freeze()
         }
     }
@@ -196,7 +196,7 @@ impl<T> BroadcastHandler<T> for Handler {
                 startup_time: _,
                 node_id: _,
             } => {
-                //TODO check if node_id and startup_time combo was already seen and if not send full state up date message
+                //TODO check if node_id and startup_time combo was already seen and if not send full state update message
                 let current_state = self.data_handler.get_state();
                 let broadcast = self.craft_broadcast(Tag::SyncOperation {
                     operation_id: Uuid::new_v4()

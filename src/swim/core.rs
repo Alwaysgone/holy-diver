@@ -1,7 +1,7 @@
 use std::{
-    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::{Mutex, Arc}, cell::RefCell
+    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::{Mutex, Arc}
 };
-use automerge::{Automerge, ActorId, AutoCommit, transaction::Transactable, ObjType, ROOT};
+use automerge::{ActorId, AutoCommit, transaction::Transactable, ObjType, ROOT};
 use bytes::{BufMut, Bytes, BytesMut};
 use foca::{Identity, Notification, Runtime, Timer, Config};
 use log::{info, error, trace};
@@ -46,10 +46,6 @@ impl<T> AccumulatingRuntime<T> {
             notifications: Vec::new(),
         }
     }
-
-    pub fn backlog(&self) -> usize {
-        self.to_send.len() + self.to_schedule.len() + self.notifications.len()
-    }
 }
 
 pub struct MyDataHandler {
@@ -63,7 +59,7 @@ pub fn read_state_from_disk(data_dir:&PathBuf) -> AutoCommit {
     if automerge_doc_path.exists() {
         let mut read_buffer = Vec::new();    
         automerge_doc = match File::open(automerge_doc_path.clone())
-        .map(|f| BufReader::new(f))
+        .map(BufReader::new)
         .map(|mut r| r.read_to_end(&mut read_buffer)) {
             Ok(_) => {
                 match AutoCommit::load(&read_buffer) {
@@ -122,27 +118,6 @@ impl MyDataHandler {
         }
     }
 
-    // fn store(&mut self) {
-    //     let automerge_doc_path = self.data_path.join("automerge.dat");
-
-    //     info!("Storing to {} ...", automerge_doc_path.display());
-    //     let mut file = fs::OpenOptions::new()
-    //     .write(true)
-    //     .truncate(true)
-    //     .create(true)
-    //     .open(automerge_doc_path.clone())
-    //     .unwrap();
-
-    //     match file.write_all(&self.data.lock().unwrap().save()) {
-    //         Ok(_) => {
-    //             info!("Wrote current state to {}", automerge_doc_path.display());
-    //         },
-    //         Err(e) => {
-    //             error!("Could not write current state to {}: {}", automerge_doc_path.display(), e);
-    //         }
-    //     }        
-    // }
-
     fn store_data(mut data:AutoCommit, data_path:&PathBuf) {
         let mut file = fs::OpenOptions::new()
         .write(true)
@@ -190,9 +165,3 @@ pub struct FocaRuntimeConfig {
     pub announce_to: Option<ID>,
     pub foca_config: Config
 }
-
-// pub trait HolyDiverController {
-//     fn get_field(&self, field_name: String) -> Result<String, anyhow::Error>;
-
-//     fn set_field(&mut self, field_name: String, field_value: String) -> Result<(), anyhow::Error>;
-// }

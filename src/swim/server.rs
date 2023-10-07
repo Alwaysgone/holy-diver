@@ -1,26 +1,26 @@
-use std::cell::RefCell;
-use std::ops::DerefMut;
-use std::sync::mpsc::Sender;
+
+
+
 use std::sync::{Arc, Mutex};
 
 use actix_web::web::Data;
 use actix_web::{get, put, web, App, HttpRequest, HttpServer, HttpResponse};
-use automerge::{AutomergeError, AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use foca::{Foca, PostcardCodec};
-use log::info;
-use rand::rngs::StdRng;
-use serde::Deserialize;
-use tracing::field;
-use uuid::Uuid;
-use crate::HolyDiverController;
-use crate::{MyDataHandler, swim::broadcast::GossipMessage};
 
-use super::broadcast::craft_broadcast;
-use super::foca::FocaCommand;
-use super::{types::ID, broadcast::Handler};
-use crate::swim::broadcast::MessageType::FullSync;
-use crate::swim::broadcast::Tag::SyncOperation;
-use anyhow::Result;
+
+use log::info;
+
+use serde::Deserialize;
+
+
+use crate::HolyDiverController;
+
+
+
+
+
+
+
+
 
 #[derive(Deserialize)]
 struct FieldUpdate {
@@ -38,7 +38,7 @@ async fn get_field(field:web::Path<String>
     , controller:web::Data<Arc<Mutex<HolyDiverController>>>) -> HttpResponse {
     let field_value = controller.lock().unwrap().get_field(field.to_string());
     info!("Got field value: {:?}", field_value);
-    HttpResponse::Ok().body(format!("{}: {}", field.to_string(), field_value.unwrap_or("N/A".to_owned())))
+    HttpResponse::Ok().body(format!("{}: {}", field, field_value.unwrap_or("N/A".to_owned())))
 }
 
 #[put("/state/{field}")]

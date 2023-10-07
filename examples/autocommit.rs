@@ -1,5 +1,4 @@
-use automerge::{ObjType, AutoCommit, transaction::{Transactable, Observed},
-    ReadDoc, AutoSerde, AutoCommitWithObs, VecOpObserver, AutomergeError,
+use automerge::{AutoCommit, transaction::{Transactable, Observed}, AutoCommitWithObs, VecOpObserver, AutomergeError,
     sync::{self, SyncDoc}};
 
 fn main() -> Result<(), AutomergeError> {
