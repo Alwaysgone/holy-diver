@@ -1,11 +1,12 @@
 use std::{
-    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::{Mutex, Arc}
+    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::Mutex
 };
-use automerge::{ActorId, AutoCommit, transaction::Transactable, ObjType, ROOT};
+use automerge::{ActorId, AutoCommit, transaction::Transactable, ObjType, ROOT, ReadDoc};
 use bytes::{BufMut, Bytes, BytesMut};
 use foca::{Identity, Notification, Runtime, Timer, Config};
 use log::{info, error, trace};
 use super::{broadcast::{MessageType, MessageType::FullSync, DataHandler}, types::ID};
+use anyhow::Result;
 
 pub struct AccumulatingRuntime<T> {
     pub to_send: Vec<(T, Bytes)>,
@@ -49,11 +50,11 @@ impl<T> AccumulatingRuntime<T> {
 }
 
 pub struct MyDataHandler {
-    data:Arc<Mutex<AutoCommit>>,
-    data_path:PathBuf,
+    data: Mutex<AutoCommit>,
+    data_path: PathBuf,
 }
 
-pub fn read_state_from_disk(data_dir:&PathBuf) -> AutoCommit {
+pub fn read_state_from_disk(data_dir: &PathBuf) -> AutoCommit {
     let automerge_doc_path = data_dir.join("automerge.dat");
     let automerge_doc;
     if automerge_doc_path.exists() {
@@ -111,9 +112,10 @@ impl DataHandler for MyDataHandler {
 }
 
 impl MyDataHandler {
-    pub fn new(data_dir:&PathBuf, intial_state:Arc<Mutex<AutoCommit>>) -> Self {
+    pub fn new(data_dir: &PathBuf) -> Self {
+        let initial_state = Mutex::from(read_state_from_disk(data_dir));
         MyDataHandler {
-            data: intial_state,
+            data: initial_state,
             data_path: data_dir.to_owned(),
         }
     }
@@ -137,7 +139,7 @@ impl MyDataHandler {
     }
 
     fn merge(&mut self, mut other:AutoCommit) {
-        let automerge_doc_path = self.data_path.join("automerge.dat");
+        let automerge_doc_path = Self::get_state_path(&self.data_path);
         let mut data = self.data.lock().unwrap();
         match data.merge(&mut other) {
             Ok(cs) => {
@@ -148,6 +150,33 @@ impl MyDataHandler {
                 error!("Could not merge changes into local state: {}", e);
             },
         }
+    }
+
+    pub fn get_field(&self, field_name: String) -> Option<String> {
+        let state = self.data.lock().unwrap();
+        let values = match state.get(ROOT, "values").unwrap() {
+            Some((automerge::Value::Object(ObjType::Map), values)) => values,
+            _ => panic!("a map with name values is expected in the ROOT of the AutoMerge document"),
+        };
+        state.get(&values, field_name).unwrap()
+            .map(|(v,_)| v)
+            .map(|v| v.to_string())
+    }
+
+    pub async fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
+        let mut state = self.data.lock().unwrap();
+        let values = match state.get(ROOT, "values").unwrap() {
+            Some((automerge::Value::Object(ObjType::Map), values)) => values,
+            _ => panic!("a map with name values is expected in the ROOT of the AutoMerge document"),
+        };
+        state.put(&values, field_name, field_value)?;
+        let automerge_doc_path = Self::get_state_path(&self.data_path);
+        Self::store_data(state.to_owned(), &automerge_doc_path);
+        Ok(())
+    }
+
+    fn get_state_path(data_path: &PathBuf) -> PathBuf {
+        data_path.join("automerge.dat")
     }
 }
 

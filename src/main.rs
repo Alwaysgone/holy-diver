@@ -10,18 +10,18 @@ use tokio::sync::mpsc::Sender;
 use log::info;
 use dotenv::dotenv;
 
-use swim::foca::FocaCommand;
+use swim::{foca::FocaCommand, broadcast::DataHandler};
 use swim::types::ID;
 
 use swim::broadcast::{MessageType::FullSync, GossipMessage, Tag::SyncOperation};
 
-use automerge::{transaction::Transactable, ObjType, ROOT, AutoCommit, ReadDoc};
+use automerge::{transaction::Transactable, ObjType, ROOT, AutoCommit};
 use uuid::Uuid;
 
 use swim::{foca::FocaCommand::SendBroadcast, foca::setup_foca, core::FocaRuntimeConfig, server::host_server};
 use anyhow::Result;
 
-use crate::swim::core::read_state_from_disk;
+use crate::swim::core::MyDataHandler;
 
 fn cli() -> Command {
     Command::new("holy-diver")
@@ -65,32 +65,21 @@ fn get_broadcast_data() -> Vec<u8> {
 
 pub struct HolyDiverController {
     foca_command_sender: Sender<FocaCommand>,
-    local_state: Arc<Mutex<AutoCommit>>,
+    data_handler: Arc<Mutex<MyDataHandler>>,
 }
 
 impl HolyDiverController {
     fn get_field(&self, field_name: String) -> Option<String> {
-        let state = self.local_state.lock().unwrap();
-        let values = match state.get(ROOT, "values").unwrap() {
-            Some((automerge::Value::Object(ObjType::Map), values)) => values,
-            _ => panic!("a map with name values is expected in the ROOT of the AutoMerge document"),
-        };
-        state.get(&values, field_name).unwrap()
-            .map(|(v,_)| v)
-            .map(|v| v.to_string())
+        self.data_handler.lock().unwrap().get_field(field_name)
     }
 
     async fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
-        let mut state = self.local_state.lock().unwrap();
-        let values = match state.get(ROOT, "values").unwrap() {
-            Some((automerge::Value::Object(ObjType::Map), values)) => values,
-            _ => panic!("a map with name values is expected in the ROOT of the AutoMerge document"),
-        };
-        state.put(&values, field_name, field_value)?;
+        let mut handler = self.data_handler.lock().unwrap();
+        handler.set_field(field_name, field_value).await?;
         // broadcasting the change so that all nodes get this update
         self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
             operation_id: Uuid::new_v4()
-        }, GossipMessage::new(FullSync, state.save())))).await.unwrap();
+        }, GossipMessage::new(FullSync, handler.get_state())))).await?;
         Ok(())
     }
 }
@@ -151,10 +140,10 @@ async fn main() -> Result<(), anyhow::Error> {
         announce_to,
         foca_config,
     };
-    let state = read_state_from_disk(data_dir);
-    let state_ref = Arc::from(Mutex::from(state));
-
-    let foca_command_sender = setup_foca(runtime_config, state_ref.clone()).await?;
+    // let state = read_state_from_disk(data_dir);
+    // let state_ref = Arc::from(Mutex::from(state));
+    let data_handler = Arc::from(Mutex::from(MyDataHandler::new(&runtime_config.data_dir)));
+    let foca_command_sender = setup_foca(runtime_config, Box::new(data_handler.clone())).await?;
     if should_broadcast {
         let broadcast_data = get_broadcast_data();
         foca_command_sender.send(SendBroadcast((SyncOperation {
@@ -163,7 +152,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
     let rest_controller = Arc::from(Mutex::from(HolyDiverController{
         foca_command_sender: foca_command_sender.clone(),
-        local_state: state_ref,
+        data_handler: data_handler,
     }));
     host_server(rest_port.to_owned(), rest_controller).await?;
     Ok(())

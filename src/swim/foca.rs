@@ -2,7 +2,6 @@ use std::{
     net::SocketAddr,
     sync::{Arc, Mutex}, collections::HashSet,
 };
-use automerge::AutoCommit;
 
 use rand::{rngs::StdRng, SeedableRng};
 use foca::{Foca, Notification, PostcardCodec, Timer};
@@ -10,12 +9,10 @@ use tokio::{net::UdpSocket, sync::mpsc::{self, Sender}};
 use log::{info, error, trace};
 use bytes::{BufMut, Bytes, BytesMut};
 
-use super::{core::{AccumulatingRuntime, FocaRuntimeConfig}, broadcast::{Tag, GossipMessage, craft_broadcast}};
+use super::{core::{AccumulatingRuntime, FocaRuntimeConfig}, broadcast::{Tag, GossipMessage, craft_broadcast, DataHandler}};
 use super::types::ID;
 use super::members::Members;
 use super::broadcast::Handler;
-
-use crate::swim::core::MyDataHandler;
 
 enum Input<T> {
     Event(Timer<T>),
@@ -30,9 +27,8 @@ pub enum FocaCommand {
     Announce(ID),
 }
 
-pub async fn setup_foca(runtime_config: FocaRuntimeConfig, state:Arc<Mutex<AutoCommit>>) -> Result<Sender<FocaCommand>, anyhow::Error> {
+pub async fn setup_foca(runtime_config: FocaRuntimeConfig, data_handler: Box<Arc<Mutex<dyn DataHandler + Send + Sync>>>) -> Result<Sender<FocaCommand>, anyhow::Error> {
     let rng = StdRng::from_entropy();
-    let data_handler = Box::new(MyDataHandler::new(&runtime_config.data_dir, state));
     let broadcast_handler = Handler::new(HashSet::new(), data_handler);
     let identity = runtime_config.identity;
     let announce_to = runtime_config.announce_to;
@@ -44,7 +40,7 @@ pub async fn setup_foca(runtime_config: FocaRuntimeConfig, state:Arc<Mutex<AutoC
 
     let socket = Arc::new(UdpSocket::bind(runtime_config.bind_addr).await?);
 
-        // We'll create a task responsible to sending data through the
+    // We'll create a task responsible to sending data through the
     // socket.
     // These are what we use to communicate with it
     let (tx_send_data, mut rx_send_data) = mpsc::channel::<(SocketAddr, Bytes)>(100);

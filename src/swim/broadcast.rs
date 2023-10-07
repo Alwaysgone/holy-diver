@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     net::SocketAddr,
-    time::SystemTime,
+    time::SystemTime, sync::{Mutex, Arc},
 };
 use bincode::Options;
 use bytes::{Bytes, BytesMut, BufMut,};
@@ -105,7 +105,7 @@ pub enum MessageType {
 
 pub struct Handler {
     seen_op_ids: HashSet<Uuid>,
-    data_handler: Box<dyn DataHandler + Send + Sync>,
+    data_handler: Box<Arc<Mutex<dyn DataHandler + Send + Sync>>>,
 }
 
 pub trait DataHandler {
@@ -128,7 +128,7 @@ pub fn craft_broadcast(tag: Tag, item: GossipMessage) -> Broadcast {
 impl Handler {
     pub fn new(
         seen_op_ids: HashSet<Uuid>,
-        data_handler: Box<dyn DataHandler + Send + Sync>,) -> Self {
+        data_handler: Box<Arc<Mutex<dyn DataHandler + Send + Sync>>>,) -> Self {
         Self {
             seen_op_ids,
             data_handler,
@@ -184,7 +184,8 @@ impl<T> BroadcastHandler<T> for Handler {
                     // This is where foca stops caring
                     // If it were me, I'd stuff the bytes as-is into a channel
                     // and have a separate task/thread consuming it.
-                    self.data_handler.handle_message(msg.message_type, msg.message_payload.clone());
+                    self.data_handler.lock().unwrap().handle_message(msg.message_type, msg.message_payload.clone());
+                    // self.data_handler.handle_message(msg.message_type, msg.message_payload.clone());
                 }
 
                 // This WAS new information, so we signal it to foca
@@ -197,7 +198,7 @@ impl<T> BroadcastHandler<T> for Handler {
                 node_id: _,
             } => {
                 //TODO check if node_id and startup_time combo was already seen and if not send full state update message
-                let current_state = self.data_handler.get_state();
+                let current_state = self.data_handler.lock().unwrap().get_state();
                 let broadcast = self.craft_broadcast(Tag::SyncOperation {
                     operation_id: Uuid::new_v4()
                 }, GossipMessage::new(MessageType::FullSync, current_state));
