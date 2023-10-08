@@ -1,8 +1,6 @@
-use std::{
-    net::SocketAddr
-};
+use std::net::SocketAddr;
 use serde::{Serialize, Deserialize};
-use foca::{Identity};
+use foca::Identity;
 use rand;
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]

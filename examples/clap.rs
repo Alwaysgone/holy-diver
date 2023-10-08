@@ -1,27 +1,24 @@
-mod swim;
-
 use std::{
     net::SocketAddr, str::FromStr,
     sync::{Arc, Mutex}, num::NonZeroU8, path::PathBuf,
 };
 use clap::{arg, Command, value_parser, builder::{NonEmptyStringValueParser, BoolValueParser, OsStr}};
 use foca::Config;
-use tokio::sync::mpsc::Sender;
+use holydiver::swim::core::HolyDiverController;
 use log::info;
 use dotenv::dotenv;
 
-use swim::{foca::FocaCommand, broadcast::DataHandler};
-use swim::types::ID;
+use holydiver::swim::types::ID;
 
-use swim::broadcast::{MessageType::FullSync, GossipMessage, Tag::SyncOperation};
+use holydiver::swim::broadcast::{MessageType::FullSync, GossipMessage, Tag::SyncOperation};
 
 use automerge::{transaction::Transactable, ObjType, ROOT, AutoCommit};
 use uuid::Uuid;
 
-use swim::{foca::FocaCommand::SendBroadcast, foca::setup_foca, core::FocaRuntimeConfig, server::host_server};
+use holydiver::swim::{foca::FocaCommand::SendBroadcast, foca::setup_foca, core::FocaRuntimeConfig, server::host_server};
 use anyhow::Result;
 
-use crate::swim::core::HolyDiverDataHandler;
+use holydiver::swim::core::HolyDiverDataHandler;
 
 fn cli() -> Command {
     Command::new("holy-diver")
@@ -51,37 +48,11 @@ fn cli() -> Command {
         
 }
 
-fn get_test_data() -> AutoCommit {
+fn get_broadcast_data() -> Vec<u8> {
     let mut state = AutoCommit::new();
     let values = state.put_object(ROOT, "values", ObjType::Map).unwrap();
     state.put(&values, "name", "dio").unwrap();
-    state
-}
-
-fn get_broadcast_data() -> Vec<u8> {
-    let mut data = get_test_data();
-    data.save()
-}
-
-pub struct HolyDiverController {
-    foca_command_sender: Sender<FocaCommand>,
-    data_handler: Arc<Mutex<HolyDiverDataHandler>>,
-}
-
-impl HolyDiverController {
-    fn get_field(&self, field_name: String) -> Option<String> {
-        self.data_handler.lock().unwrap().get_field(field_name)
-    }
-
-    async fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
-        let mut handler = self.data_handler.lock().unwrap();
-        handler.set_field(field_name, field_value).await?;
-        // broadcasting the change so that all nodes get this update
-        self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
-            operation_id: Uuid::new_v4()
-        }, GossipMessage::new(FullSync, handler.get_state())))).await?;
-        Ok(())
-    }
+    state.save()
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -134,7 +105,7 @@ async fn main() -> Result<(), anyhow::Error> {
         c
     };
     let runtime_config = FocaRuntimeConfig {
-        identity,
+        identity: identity.clone(),
         data_dir: data_dir.to_owned(),
         bind_addr,
         announce_to,
@@ -142,7 +113,7 @@ async fn main() -> Result<(), anyhow::Error> {
     };
     // let state = read_state_from_disk(data_dir);
     // let state_ref = Arc::from(Mutex::from(state));
-    let data_handler = Arc::from(Mutex::from(HolyDiverDataHandler::new(&runtime_config.data_dir)));
+    let data_handler = Arc::from(Mutex::from(HolyDiverDataHandler::new(&runtime_config.data_dir, identity.clone())));
     let foca_command_sender = setup_foca(runtime_config, Box::new(data_handler.clone())).await?;
     if should_broadcast {
         let broadcast_data = get_broadcast_data();

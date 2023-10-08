@@ -1,26 +1,13 @@
-
-
-
 use std::sync::{Arc, Mutex};
 
 use actix_web::web::Data;
 use actix_web::{get, put, web, App, HttpRequest, HttpServer, HttpResponse};
 
-
 use log::info;
 
 use serde::Deserialize;
 
-
-use crate::HolyDiverController;
-
-
-
-
-
-
-
-
+use crate::swim::core::HolyDiverController;
 
 #[derive(Deserialize)]
 struct FieldUpdate {

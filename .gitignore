@@ -16,3 +16,5 @@ Cargo.lock
 
 # Custom
 /data*
+/examples/data1/automerge.dat
+/examples/data2/automerge.dat

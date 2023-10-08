@@ -1,11 +1,13 @@
 use std::{
-    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::Mutex
+    time::Duration, path::PathBuf, io::{BufReader, Read, Write}, fs::{File, self}, net::SocketAddr, sync::{Mutex, Arc}
 };
 use automerge::{ActorId, AutoCommit, transaction::Transactable, ObjType, ROOT, ReadDoc};
 use bytes::{BufMut, Bytes, BytesMut};
 use foca::{Identity, Notification, Runtime, Timer, Config};
 use log::{info, error, trace};
-use super::{broadcast::{MessageType, MessageType::FullSync, DataHandler}, types::ID};
+use tokio::sync::mpsc::Sender;
+use uuid::Uuid;
+use super::{broadcast::{MessageType, MessageType::FullSync, DataHandler, GossipMessage, Tag::SyncOperation}, types::ID, foca::FocaCommand};
 use anyhow::Result;
 
 pub struct AccumulatingRuntime<T> {
@@ -54,7 +56,7 @@ pub struct HolyDiverDataHandler {
     data_path: PathBuf,
 }
 
-pub fn read_state_from_disk(data_dir: &PathBuf) -> AutoCommit {
+pub fn read_state_from_disk(data_dir: &PathBuf, identity: ID) -> AutoCommit {
     let automerge_doc_path = data_dir.join("automerge.dat");
     let automerge_doc;
     if automerge_doc_path.exists() {
@@ -70,18 +72,18 @@ pub fn read_state_from_disk(data_dir: &PathBuf) -> AutoCommit {
                     },
                     Err(e) => {
                         error!("Could not load state from {}: {}", automerge_doc_path.display(), e);
-                        get_initial_state()
+                        get_initial_state(identity)
                     }
                 }
             },
             Err(e) => {
                 error!("Could not read file at {}: {}", automerge_doc_path.display(), e);
-                get_initial_state()
+                get_initial_state(identity)
             },
         };
     } else {
         info!("No state found at {}, creating initial state ...", automerge_doc_path.display());
-        automerge_doc = get_initial_state();
+        automerge_doc = get_initial_state(identity);
     }
     automerge_doc
 }
@@ -112,8 +114,8 @@ impl DataHandler for HolyDiverDataHandler {
 }
 
 impl HolyDiverDataHandler {
-    pub fn new(data_dir: &PathBuf) -> Self {
-        let initial_state = Mutex::from(read_state_from_disk(data_dir));
+    pub fn new(data_dir: &PathBuf, identity: ID) -> Self {
+        let initial_state = Mutex::from(read_state_from_disk(data_dir, identity));
         HolyDiverDataHandler {
             data: initial_state,
             data_path: data_dir.to_owned(),
@@ -180,9 +182,9 @@ impl HolyDiverDataHandler {
     }
 }
 
-fn get_initial_state() -> AutoCommit {
+fn get_initial_state(identity: ID) -> AutoCommit {
     let mut state = AutoCommit::new()
-    .with_actor(ActorId::from("default".as_bytes()));
+    .with_actor(ActorId::from(format!("{:?}", identity).as_bytes()));
     state.put_object(ROOT, "values", ObjType::Map).unwrap();
     state
 }
@@ -193,4 +195,25 @@ pub struct FocaRuntimeConfig {
     pub bind_addr: SocketAddr,
     pub announce_to: Option<ID>,
     pub foca_config: Config
+}
+
+pub struct HolyDiverController {
+    pub foca_command_sender: Sender<FocaCommand>,
+    pub data_handler: Arc<Mutex<HolyDiverDataHandler>>,
+}
+
+impl HolyDiverController {
+    pub fn get_field(&self, field_name: String) -> Option<String> {
+        self.data_handler.lock().unwrap().get_field(field_name)
+    }
+
+    pub async fn set_field(&mut self, field_name: String, field_value: String) -> Result<()> {
+        let mut handler = self.data_handler.lock().unwrap();
+        handler.set_field(field_name, field_value).await?;
+        // broadcasting the change so that all nodes get this update
+        self.foca_command_sender.send(FocaCommand::SendBroadcast((SyncOperation {
+            operation_id: Uuid::new_v4()
+        }, GossipMessage::new(FullSync, handler.get_state())))).await?;
+        Ok(())
+    }
 }
